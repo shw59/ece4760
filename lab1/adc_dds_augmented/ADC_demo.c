@@ -179,9 +179,4 @@ int main(){
   
   // === initalize the scheduler ===============
   pt_schedule_start ;
-
-  // Nothing happening here
-  while(1){
-  }
-  return 0;
 } // end main
