@@ -21,18 +21,18 @@ cmake_minimum_required(VERSION 3.13)
 include(pico_sdk_import.cmake)
 
 # give the project a name (anything you want)
-project(Keypad C CXX ASM)
+project(mute C CXX ASM)
 
 # initialize the sdk
 pico_sdk_init()
 
-add_executable(Keypad)
+add_executable(mute)
 
 # must match with executable name and source file names
-target_sources(Keypad PRIVATE keypad.c)
+target_sources(mute PRIVATE mute.c)
 
 # must match with executable name
-target_link_libraries(  Keypad
+target_link_libraries(  mute
                         PRIVATE
                         pico_stdlib
                         pico_multicore
@@ -41,7 +41,12 @@ target_link_libraries(  Keypad
                         hardware_dma
                         hardware_sync
                         hardware_spi
-                        hardware_clocks)
+                        hardware_clocks
+                        hardware_vreg
+                        hardware_adc
+                        hardware_timer
+                        hardware_irq
+                        pico_sync)
 
 # must match with executable name
-pico_add_extra_outputs(Keypad)
+pico_add_extra_outputs(mute)
