@@ -17,7 +17,6 @@ Schedules a single thread, reads/prints ADC value
 #include "hardware/timer.h"
 #include "hardware/adc.h"
 
-
 // ==========================================
 // === protothreads globals
 // ==========================================
@@ -32,99 +31,101 @@ Schedules a single thread, reads/prints ADC value
 #define ALARM_NUM 0
 #define ALARM_IRQ timer_hardware_alarm_get_irq_num(timer_hw, ALARM_NUM)
 
-//DDS parameters
-#define two32 4294967296.0 // 2^32 
+// DDS parameters
+#define two32 4294967296.0 // 2^32
 #define Fs 50000
 #define DELAY 20 // 1/Fs (in microseconds)
 // the DDS units:
 volatile unsigned int phase_accum_main;
-volatile unsigned int phase_incr_main = (800.0*two32)/Fs ;
+volatile unsigned int phase_incr_main = (800.0 * two32) / Fs;
 
 // SPI data
-uint16_t DAC_data ; // output value
+uint16_t DAC_data; // output value
 
-//DAC parameters
-// A-channel, 1x, active
+// DAC parameters
+//  A-channel, 1x, active
 #define DAC_config_chan_A 0b0011000000000000
 // B-channel, 1x, active
 #define DAC_config_chan_B 0b1011000000000000
 
-//SPI configurations
+// SPI configurations
 #define PIN_MISO 4
-#define PIN_CS   5
-#define PIN_SCK  6
+#define PIN_CS 5
+#define PIN_SCK 6
 #define PIN_MOSI 7
 #define SPI_PORT spi0
 
-//GPIO for timing the ISR
+// GPIO for timing the ISR
 #define ISR_GPIO 2
 
 // DDS sine table
 #define sine_table_size 256
-volatile int sin_table[sine_table_size] ;
+volatile int sin_table[sine_table_size];
 
 // Alarm ISR
-static void alarm_irq(void) {
+static void alarm_irq(void)
+{
 
-    // Assert a GPIO when we enter the interrupt
-    gpio_put(ISR_GPIO, 1) ;
+  // Assert a GPIO when we enter the interrupt
+  gpio_put(ISR_GPIO, 1);
 
-    // Clear the alarm irq
-    hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
+  // Clear the alarm irq
+  hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
 
-    // Reset the alarm register
-    timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
+  // Reset the alarm register
+  timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
 
-	// DDS phase and sine table lookup
-	phase_accum_main += phase_incr_main  ;
-    DAC_data = (DAC_config_chan_A | ((sin_table[phase_accum_main>>24] + 2048) & 0xffff))  ;
+  // DDS phase and sine table lookup
+  phase_accum_main += phase_incr_main;
+  DAC_data = (DAC_config_chan_A | ((sin_table[phase_accum_main >> 24] + 2048) & 0xffff));
 
-    // Perform an SPI transaction
-    spi_write16_blocking(SPI_PORT, &DAC_data, 1) ;
+  // Perform an SPI transaction
+  spi_write16_blocking(SPI_PORT, &DAC_data, 1);
 
-    // De-assert the GPIO when we leave the interrupt
-    gpio_put(ISR_GPIO, 0);
-
+  // De-assert the GPIO when we leave the interrupt
+  gpio_put(ISR_GPIO, 0);
 }
 
 // ==================================================
-// === toggle25 thread 
+// === toggle25 thread
 // ==================================================
-//  
-static PT_THREAD (protothread_toggle25(struct pt *pt))
+//
+static PT_THREAD(protothread_toggle25(struct pt *pt))
 {
-    PT_BEGIN(pt);
+  PT_BEGIN(pt);
 
-    static unsigned int adc_val ;
-    static unsigned int frequency;
+  static unsigned int adc_val;
+  static unsigned int frequency;
 
-      while(1) {
-        // toggle gpio 25
-        gpio_put(LED_PIN, !gpio_get(LED_PIN));
+  while (1)
+  {
+    // toggle gpio 25
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));
 
-        // Read the ADC
-        adc_val = adc_read() ;
+    // Read the ADC
+    adc_val = adc_read();
 
-        // Convert ADC reading (0-4095) to frequency (0-10,000 Hz)
-        frequency = ((uint32_t)adc_val * 10000) / 4095;
+    // Convert ADC reading (0-4095) to frequency (0-10,000 Hz)
+    frequency = ((uint32_t)adc_val * 10000) / 4095;
 
-        // Update DDS phase increment
-        phase_incr_main = (frequency * two32) / Fs;
+    // Update DDS phase increment
+    phase_incr_main = (frequency * two32) / Fs;
 
-        // Print the value
-        printf("ADC value: %d\n", adc_val) ;
+    // Print the value
+    printf("ADC value: %d\n", adc_val);
 
-        // Yield
-        PT_YIELD_usec(100000) ;
-      } // END WHILE(1)
-      // every thread ends with PT_END(pt);
-      PT_END(pt);
+    // Yield
+    PT_YIELD_usec(100000);
+  } // END WHILE(1)
+  // every thread ends with PT_END(pt);
+  PT_END(pt);
 } // end blink thread
 
 // ========================================
 // === core 0 main
 // ========================================
-int main(){
+int main()
+{
   //===  start the serial i/o ==================
   stdio_init_all();
   // announce the threader version on system reset
@@ -133,50 +134,51 @@ int main(){
   printf("Hello, DAC!\n");
 
   // Setup the ADC
-  adc_init() ;
+  adc_init();
   adc_gpio_init(ADC_PIN);
   adc_select_input(ADC_MUX);
 
   // set up LED gpio 25
-  gpio_init(LED_PIN);  
+  gpio_init(LED_PIN);
   gpio_set_dir(LED_PIN, GPIO_OUT);
   gpio_put(LED_PIN, true);
 
   // Initialize SPI channel (channel, baud rate set to 20MHz)
-  spi_init(SPI_PORT, 20000000) ;
+  spi_init(SPI_PORT, 20000000);
   // Format (channel, data bits per transfer, polarity, phase, order)
   spi_set_format(SPI_PORT, 16, 0, 0, 0);
 
   // Setup the ISR-timing GPIO
-  gpio_init(ISR_GPIO) ;
+  gpio_init(ISR_GPIO);
   gpio_set_dir(ISR_GPIO, GPIO_OUT);
-  gpio_put(ISR_GPIO, 0) ;
+  gpio_put(ISR_GPIO, 0);
 
   // Map SPI signals to GPIO ports
   gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
   gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
   gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
-  gpio_set_function(PIN_CS, GPIO_FUNC_SPI) ;
+  gpio_set_function(PIN_CS, GPIO_FUNC_SPI);
 
   // === build the sine lookup table =======
   // scaled to produce values between 0 and 4096
   int ii;
-  for (ii = 0; ii < sine_table_size; ii++){
-        sin_table[ii] = (int)(2047*sin((float)ii*6.283/(float)sine_table_size));
+  for (ii = 0; ii < sine_table_size; ii++)
+  {
+    sin_table[ii] = (int)(2047 * sin((float)ii * 6.283 / (float)sine_table_size));
   }
 
   // Enable the interrupt for the alarm (we're using Alarm 0)
-  hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM) ;
+  hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
   // Associate an interrupt handler with the ALARM_IRQ
-  irq_set_exclusive_handler(ALARM_IRQ, alarm_irq) ;
+  irq_set_exclusive_handler(ALARM_IRQ, alarm_irq);
   // Enable the alarm interrupt
-  irq_set_enabled(ALARM_IRQ, true) ;
+  irq_set_enabled(ALARM_IRQ, true);
   // Write the lower 32 bits of the target time to the alarm register, arming it.
-  timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
+  timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
 
   // === config threads ========================
   pt_add_thread(protothread_toggle25);
-  
+
   // === initalize the scheduler ===============
-  pt_schedule_start ;
+  pt_schedule_start;
 } // end main
