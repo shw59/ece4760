@@ -262,7 +262,7 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                         rec_sample_count += 1;
                     } else { // reached recording time limit, stop recording
                         curr_record_state = RECORD_NONE;
-                        rec_sample_counts[recording_key-1] = rec_sample_count
+                        recs_num_samples[recording_key-1] = rec_sample_count
                         rec_sample_count = 0;
                     }
                     
