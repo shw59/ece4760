@@ -47,19 +47,23 @@
 #define MAX_SAMPLE_COUNT 3000 // 3000 samples to cover 30 seconds at 100Hz sampling rate of ADC
 
 // States for keypad debouncing
-typedef enum {
+typedef enum
+{
     NOT_PRESSED,
     MAYBE_PRESSED,
     PRESSED,
     MAYBE_NOT_PRESSED
 } key_state_t;
 
-// States for recording 
-typedef enum {
+// States for recording
+typedef enum
+{
     RECORD_NONE,
     RECORD_EN,
     RECORDING,
-    PLAYBACK
+    PLAYBACK,
+    COMPOSE,
+    SEQ_PLAYBACK
 } record_state_t;
 
 unsigned int keycodes[NUMKEYS] = {0x57, 0x6E, 0x5E, 0x3E, 0x6D,
@@ -114,8 +118,10 @@ uint16_t DAC_data; // output value
 
 // DDS sine table
 #define sine_table_size 256
+#define COMPOSE_SIZE 10
 volatile int sin_table[sine_table_size];
-volatile int freq_table[NUMKEYS_RECORD][MAX_SAMPLE_COUNT]; 
+volatile int freq_table[NUMKEYS_RECORD][MAX_SAMPLE_COUNT];
+volatile int compose_table[COMPOSE_SIZE];
 
 // Alarm ISR
 static void alarm_irq(void)
@@ -153,14 +159,16 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
     static record_state_t curr_record_state = RECORD_NONE;
     // static unsigned int count = 0;
     static uint32_t possible;
-    static bool mute = true;
+    static bool mute = false;
     // static bool record_mode = false; // record_mode false implies playback mode
     static unsigned int adc_val;
     static unsigned int frequency;
-    static unsigned int rec_sample_count; // active sample counter during recording or playback
+    static unsigned int rec_sample_count;                 // active sample counter during recording or playback
     static unsigned int recs_num_samples[NUMKEYS_RECORD]; // stores number of samples recorded per key (1-9)
-    static int recording_key = -1; // key (1-9) currently being recorded or played back
+    static int recording_key = -1;                        // key (1-9) currently being recorded or played back
     // static unsigned int playback_idx = 0;
+    static int compose_index = 0;
+    static int compose_len = 0;
 
     // scan()
     while (1)
@@ -169,28 +177,35 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         gpio_put(LED_PIN, !gpio_get(LED_PIN));
 
         // Scan the keypad!
-        for (i=0; i<KEYROWS; i++) {
+        for (i = 0; i < KEYROWS; i++)
+        {
             // Set a row high
             gpio_put_masked((0xF << BASE_KEYPAD_PIN),
-                            (scancodes[i] << BASE_KEYPAD_PIN)) ;
+                            (scancodes[i] << BASE_KEYPAD_PIN));
             // Small delay required
-            sleep_us(1) ;
+            sleep_us(1);
             // Read the keycode
-            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
+            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F);
             // Break if button(s) are pressed
-            if ((~keypad) & button) break ;
+            if ((~keypad) & button)
+                break;
         }
         // If we found a button . . .
-        if ((~keypad) & button) {
+        if ((~keypad) & button)
+        {
             // Look for a valid keycode.
-            for (i=0; i<NUMKEYS; i++) {
-                if (keypad == keycodes[i]) break ;
+            for (i = 0; i < NUMKEYS; i++)
+            {
+                if (keypad == keycodes[i])
+                    break;
             }
             // If we don't find one, report invalid keycode
-            if (i==NUMKEYS) (i = -1) ;
+            if (i == NUMKEYS)
+                (i = -1);
         }
         // Otherwise, indicate invalid/non-pressed buttons
-        else (i=-1) ;
+        else
+            (i = -1);
 
         // Read the ADC
         adc_val = adc_read();
@@ -198,93 +213,185 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         // Convert ADC reading (0-4095) to frequency (0-10 kHz)
         frequency = ((uint32_t)adc_val * 10000) / 4095;
 
-        if (mute) {
+        if (mute)
+        {
             frequency = 0;
-        } else if (curr_record_state == PLAYBACK) {
-            if (rec_sample_count < rec_sample_counts[recording_key-1]) {
-                frequency = freq_table[recording_key-1][rec_sample_count];
+        }
+        if (curr_record_state == PLAYBACK)
+        {
+            printf("PLAY \n");
+            if (rec_sample_count < recs_num_samples[recording_key - 1])
+            {
+                frequency = freq_table[recording_key - 1][rec_sample_count];
                 rec_sample_count += 1;
-            } else {
+            }
+            else
+            {
                 curr_record_state = RECORD_NONE;
                 rec_sample_count = 0;
             }
-            
+        }
+        else if (curr_record_state == SEQ_PLAYBACK)
+        {
+            if (compose_index < compose_len)
+            {
+                int key = compose_table[compose_index] - 1;
+                // printf("\nSEQ_PLAYBACK key = %d", key);
+                int i = 0;
+                // while (i < compose_len)
+                // {
+                //     // printf("\n%d", compose_table[i]);
+                //     i += 1;
+                // }
+                if (rec_sample_count < recs_num_samples[key])
+                {
+                    // printf("\nsampling sample = %d", rec_sample_count);
+                    // printf("sample ");
+                    frequency = freq_table[key][rec_sample_count];
+                    rec_sample_count += 1;
+                }
+                else
+                {
+                    // printf("num of samples: %d", recs_num_samples[key]);
+                    // printf("\nfinished sampling compose id = %d", compose_index);
+                    compose_index += 1;
+                    rec_sample_count = 0;
+                }
+            }
+            else
+            {
+                curr_record_state = RECORD_NONE;
+                compose_index = 0;
+            }
         }
 
         // Update DDS phase increment
         phase_incr_main = (frequency * two32) / Fs;
 
-        printf("DDS Frequency: %u \n", frequency);
+        // printf("DDS Frequency: %u \n", frequency);
 
         // Enter state machine debouncing
-        switch (curr_state) {
-            case NOT_PRESSED:
-                printf("NOT PRESSED\n");
-                if (i != -1) {
-                    curr_state = MAYBE_PRESSED;
-                    possible = i;
-                }
+        switch (curr_state)
+        {
+        case NOT_PRESSED:
+            // printf("NOT PRESSED\n");
+            if (i != -1)
+            {
+                curr_state = MAYBE_PRESSED;
+                possible = i;
+            }
 
-                break;
-            
-            case MAYBE_PRESSED:
-                printf("MAYBE PRESSED\n");
-                if (i == possible) {
-                    curr_state = PRESSED;
-                    if (i == 0) (mute = !mute); // toggle mute/unmute when 0 is pressed
-                    else if (i == 10) (curr_record_state = RECORD_EN); // * = record mode on
-                    else if (i != 11) { // a key (1-9) is being pressed, so we either want to record if in record mode or playback if a recording exists at that key
-                        if (curr_record_state == RECORD_EN) {
-                            // start recording
-                            curr_record_state = RECORDING;
-                        } else if (recs_num_samples[i-1] > 0) { // if there's a recording for this key i, play it back
-                            curr_record_state = PLAYBACK;
-                            rec_sample_count = 0;
-                        }
-                        recording_key = i; // save the key currently being recorded/played back
+            break;
+
+        case MAYBE_PRESSED:
+            // printf("MAYBE PRESSED\n");
+            if (i == possible)
+            {
+                curr_state = PRESSED;
+                if (i == 0)
+                    (mute = !mute); // toggle mute/unmute when 0 is pressed
+                else if (i == 10)
+                    (curr_record_state = RECORD_EN); // * = record mode on
+                else if (i == 11)
+                {
+                    // printf("COMPOSING-------");
+                    if (compose_index > 0)
+                    {
+                        // printf("playback compose id = %d", compose_index);
+                        curr_record_state = SEQ_PLAYBACK;
+                        compose_len = compose_index;
+                        compose_index = 0;
                     }
-                } else {
-                    curr_state = NOT_PRESSED;
+                    else
+                    {
+                        // printf("composing");
+                        curr_record_state = COMPOSE;
+                    }
                 }
-
-                break;
-
-            case PRESSED:
-                printf("PRESSED\n");
-                if (i != possible) {
-                    curr_state = MAYBE_NOT_PRESSED;
-                }
-
-                // currently recording on key i
-                if (curr_record_state == RECORDING) {
-                    if (rec_sample_count < MAX_SAMPLE_COUNT) {
-                        freq_table[recording_key - 1][rec_sample_count] = frequency;
-                        rec_sample_count += 1;
-                    } else { // reached recording time limit, stop recording
-                        curr_record_state = RECORD_NONE;
-                        recs_num_samples[recording_key-1] = rec_sample_count
+                else if (i != 11)
+                { // a key (1-9) is being pressed, so we either want to record if in record mode or playback if a recording exists at that key
+                    if (curr_record_state == COMPOSE)
+                    {
+                        if (compose_index < COMPOSE_SIZE)
+                        {
+                            // printf("COMPOSING compose id = %d", compose_index);
+                            compose_table[compose_index] = i;
+                            compose_index += 1;
+                        }
+                        else
+                        {
+                            // printf("STOP compose");
+                            compose_len = compose_index;
+                            compose_index = 0;
+                            curr_record_state = RECORD_NONE;
+                        }
+                    }
+                    else if (curr_record_state == RECORD_EN)
+                    {
+                        // start recording
+                        // printf("START RECORDING");
+                        curr_record_state = RECORDING;
+                    }
+                    else if (recs_num_samples[i - 1] > 0)
+                    { // if there's a recording for this key i, play it back
+                        curr_record_state = PLAYBACK;
                         rec_sample_count = 0;
                     }
-                    
+                    recording_key = i; // save the key currently being recorded/played back
                 }
+            }
+            else
+            {
+                curr_state = NOT_PRESSED;
+            }
 
-                break;
+            break;
 
-            case MAYBE_NOT_PRESSED:
-                printf("MAYBE NOT PRESSED\n");
-                if (i == possible) {
-                    curr_state = PRESSED;
-                } else {
-                    curr_state = NOT_PRESSED;
-                    if (curr_record_state == RECORDING) {
-                        // user prematurely unpressed key, stop recording
-                        curr_record_state = RECORD_NONE;
-                        recs_num_samples[recording_key - 1] = rec_sample_count; // save the recording length
-                        rec_sample_count = 0; // reset sample counter
-                    }
+        case PRESSED:
+            // printf("PRESSED\n");
+            if (i != possible)
+            {
+                curr_state = MAYBE_NOT_PRESSED;
+            }
+
+            // currently recording on key i
+            if (curr_record_state == RECORDING)
+            {
+                // printf("RECORDING KEY %d", i);
+                if (rec_sample_count < MAX_SAMPLE_COUNT)
+                {
+                    freq_table[recording_key - 1][rec_sample_count] = frequency;
+                    rec_sample_count += 1;
                 }
+                else
+                { // reached recording time limit, stop recording
+                    curr_record_state = RECORD_NONE;
+                    recs_num_samples[recording_key - 1] = rec_sample_count;
+                    rec_sample_count = 0;
+                }
+            }
 
-                break;
+            break;
+
+        case MAYBE_NOT_PRESSED:
+            // printf("MAYBE NOT PRESSED\n");
+            if (i == possible)
+            {
+                curr_state = PRESSED;
+            }
+            else
+            {
+                curr_state = NOT_PRESSED;
+                if (curr_record_state == RECORDING)
+                {
+                    // user prematurely unpressed key, stop recording
+                    curr_record_state = RECORD_NONE;
+                    recs_num_samples[recording_key - 1] = rec_sample_count; // save the recording length
+                    rec_sample_count = 0;                                   // reset sample counter
+                }
+            }
+
+            break;
         }
 
         // if (not_mute)
@@ -428,8 +535,14 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         //     break;
         // }
         // printf("\n%d", i);
-
-        PT_YIELD_usec(10000); // 100Hz polling rate
+        if (curr_record_state == PLAYBACK || curr_record_state == SEQ_PLAYBACK)
+        {
+            PT_YIELD_usec(1250);
+        }
+        else
+        {
+            PT_YIELD_usec(10000); // 100Hz polling rate
+        }
     }
     // Indicate thread end
     PT_END(pt);
