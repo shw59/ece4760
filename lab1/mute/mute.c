@@ -43,6 +43,24 @@
 #define BASE_KEYPAD_PIN 9
 #define KEYROWS 4
 #define NUMKEYS 12
+#define NUMKEYS_RECORD 9
+#define MAX_SAMPLE_COUNT 3000 // 3000 samples to cover 30 seconds at 100Hz sampling rate of ADC
+
+// States for keypad debouncing
+typedef enum {
+    NOT_PRESSED,
+    MAYBE_PRESSED,
+    PRESSED,
+    MAYBE_NOT_PRESSED
+} key_state_t;
+
+// States for recording 
+typedef enum {
+    RECORD_NONE,
+    RECORD_EN,
+    RECORDING,
+    PLAYBACK
+} record_state_t;
 
 unsigned int keycodes[NUMKEYS] = {0x57, 0x6E, 0x5E, 0x3E, 0x6D,
                                   0x5D, 0x3D, 0x6B, 0x5B, 0x3B,
@@ -54,7 +72,7 @@ char keytext[40];
 int prev_key = 0;
 
 // ==========================================
-// === protothreads ADC
+// === protothreads
 // ==========================================
 // protothreads header
 #include "pt_cornell_rp2040_v1_4.h"
@@ -97,12 +115,11 @@ uint16_t DAC_data; // output value
 // DDS sine table
 #define sine_table_size 256
 volatile int sin_table[sine_table_size];
-volatile int freq_table[10];
+volatile int freq_table[NUMKEYS_RECORD][MAX_SAMPLE_COUNT]; 
 
 // Alarm ISR
 static void alarm_irq(void)
 {
-
     // Assert a GPIO when we enter the interrupt
     gpio_put(ISR_GPIO, 1);
 
@@ -132,162 +149,287 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
     // Some variables
     static int i;
     static uint32_t keypad;
-    static unsigned int count = 0;
+    static key_state_t curr_state = NOT_PRESSED;
+    static record_state_t curr_record_state = RECORD_NONE;
+    // static unsigned int count = 0;
     static uint32_t possible;
-    static bool not_mute = false;
-    static bool record_mode = false;
+    static bool mute = true;
+    // static bool record_mode = false; // record_mode false implies playback mode
     static unsigned int adc_val;
     static unsigned int frequency;
-    static int recording = -1; // key (1-9) currently being played back, or -1
-    static unsigned int playback_idx = 0;
+    static unsigned int rec_sample_count; // active sample counter during recording or playback
+    static unsigned int recs_num_samples[NUMKEYS_RECORD]; // stores number of samples recorded per key (1-9)
+    static int recording_key = -1; // key (1-9) currently being recorded or played back
+    // static unsigned int playback_idx = 0;
+
     // scan()
     while (1)
     {
         // toggle gpio 25
         gpio_put(LED_PIN, !gpio_get(LED_PIN));
-        if (not_mute)
-        {
 
-            printf("\n playing the tone");
-            // Read the ADC
-            adc_val = adc_read();
-
-            // if playing recording
-            if (recording != -1)
-            {
-                printf("\n taking %d frequency", freq_table[recording - 1]);
-                frequency = freq_table[recording - 1];
-            }
-            else
-            {
-                printf("\n current frequency");
-                frequency = ((uint32_t)adc_val * 10000) / 4095;
-            }
-
-            // Update DDS phase increment
-            phase_incr_main = (frequency * two32) / Fs;
-
-            // Print the value
-            printf("\nADC value: %d\n", adc_val);
-
-            // Yield
-            PT_YIELD_usec(100000);
-        }
-        printf("\nstart scanning the keypad");
-        // Scan the keypad! NOT PRESSED
-        for (i = 0; i < KEYROWS; i++)
-        {
+        // Scan the keypad!
+        for (i=0; i<KEYROWS; i++) {
             // Set a row high
             gpio_put_masked((0xF << BASE_KEYPAD_PIN),
-                            (scancodes[i] << BASE_KEYPAD_PIN));
+                            (scancodes[i] << BASE_KEYPAD_PIN)) ;
             // Small delay required
-            sleep_us(1);
+            sleep_us(1) ;
             // Read the keycode
-            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F);
+            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
             // Break if button(s) are pressed
-            if ((~keypad) & button)
-            {
-                printf("\nkeypad is pressed");
-                break;
-            }
+            if ((~keypad) & button) break ;
         }
-        // If we found a button . . . MAYBE PRESSED
-        if ((~keypad) & button)
-        {
+        // If we found a button . . .
+        if ((~keypad) & button) {
             // Look for a valid keycode.
-            for (i = 0; i < NUMKEYS; i++)
-            {
-                printf("\n%d", i);
-                if (keypad == keycodes[i])
-                { // pressing on i keypad
-                    if (count > 3)
-                    {
-                        if (i != possible)
-                        {
-                            printf("\npressing different key");
-                            possible = i;
-                            i = -1;
-                            count = 0;
-                        }
-                        printf("\npressing on %d", i);
-                        break;
-                    }
-                    else
-                    {
-                        printf("\ni: %d and possible: %d", i, possible);
-                        if (i != possible)
-                        {
-                            printf("\npressing different key");
-                            possible = i;
-                            i = -1;
-                            count = 0;
-                        }
-                        else
-                        {
-                            printf("\ndebouncing");
-                            count += 1;
-                            i = -1;
-                        }
-                    }
-                    break;
-                }
+            for (i=0; i<NUMKEYS; i++) {
+                if (keypad == keycodes[i]) break ;
             }
             // If we don't find one, report invalid keycode
-            if (i == NUMKEYS)
-            {
-                printf("invalid keycode");
-                // possible = -1;
-                (i = -1);
-                count = 0;
-            }
+            if (i==NUMKEYS) (i = -1) ;
         }
         // Otherwise, indicate invalid/non-pressed buttons
-        else
-            (i = -1);
+        else (i=-1) ;
 
-        // Print key to terminal
-        // PRESSED STATE
-        switch (i)
-        {
-        case 0: // mute toggle
-            not_mute = !not_mute;
-            count = 0;
-            printf("\n0 pressed, not muted: %d", not_mute);
-            break;
+        // Read the ADC
+        adc_val = adc_read();
 
-        case 10: // asterisk
-            record_mode = !record_mode;
-            printf(record_mode ? "\nentering record mode" : "\nleaving record mode");
-            break;
-        case 11: // stop key
-        case -1: // no key currently settled/pressed
-            if (recording != -1)
-            { // stop playing recording
-                printf("\n stop playback of key %d", recording);
-                recording = -1;
-            }
-            break;
+        // Convert ADC reading (0-4095) to frequency (0-10 kHz)
+        frequency = ((uint32_t)adc_val * 10000) / 4095;
 
-        default:
-            if (i < 1 || i > 9)
-                break;
-            if (record_mode)
-            {
-                adc_val = adc_read();
-                frequency = ((uint32_t)adc_val * 10000) / 4095;
-                freq_table[i - 1] = frequency;
-                printf("\nrecorded freq for key %d = %d", i, frequency);
+        if (mute) {
+            frequency = 0;
+        } else if (curr_record_state == PLAYBACK) {
+            if (rec_sample_count < rec_sample_counts[recording_key-1]) {
+                frequency = freq_table[recording_key-1][rec_sample_count];
+                rec_sample_count += 1;
+            } else {
+                curr_record_state = RECORD_NONE;
+                rec_sample_count = 0;
             }
-            else
-            {
-                recording = (recording == i) ? -1 : i;
-                printf("\ntoggle for %d, recording=%d", i, recording);
-            }
-            break;
+            
         }
+
+        // Update DDS phase increment
+        phase_incr_main = (frequency * two32) / Fs;
+
+        printf("DDS Frequency: %u \n", frequency);
+
+        // Enter state machine debouncing
+        switch (curr_state) {
+            case NOT_PRESSED:
+                printf("NOT PRESSED\n");
+                if (i != -1) {
+                    curr_state = MAYBE_PRESSED;
+                    possible = i;
+                }
+
+                break;
+            
+            case MAYBE_PRESSED:
+                printf("MAYBE PRESSED\n");
+                if (i == possible) {
+                    curr_state = PRESSED;
+                    if (i == 0) (mute = !mute); // toggle mute/unmute when 0 is pressed
+                    else if (i == 10) (curr_record_state = RECORD_EN); // * = record mode on
+                    else if (i != 11) { // a key (1-9) is being pressed, so we either want to record if in record mode or playback if a recording exists at that key
+                        if (curr_record_state == RECORD_EN) {
+                            // start recording
+                            curr_record_state = RECORDING;
+                        } else if (recs_num_samples[i-1] > 0) { // if there's a recording for this key i, play it back
+                            curr_record_state = PLAYBACK;
+                            rec_sample_count = 0;
+                        }
+                        recording_key = i; // save the key currently being recorded/played back
+                    }
+                } else {
+                    curr_state = NOT_PRESSED;
+                }
+
+                break;
+
+            case PRESSED:
+                printf("PRESSED\n");
+                if (i != possible) {
+                    curr_state = MAYBE_NOT_PRESSED;
+                }
+
+                // currently recording on key i
+                if (curr_record_state == RECORDING) {
+                    if (rec_sample_count < MAX_SAMPLE_COUNT) {
+                        freq_table[recording_key - 1][rec_sample_count] = frequency;
+                        rec_sample_count += 1;
+                    } else { // reached recording time limit, stop recording
+                        curr_record_state = RECORD_NONE;
+                        rec_sample_counts[recording_key-1] = rec_sample_count
+                        rec_sample_count = 0;
+                    }
+                    
+                }
+
+                break;
+
+            case MAYBE_NOT_PRESSED:
+                printf("MAYBE NOT PRESSED\n");
+                if (i == possible) {
+                    curr_state = PRESSED;
+                } else {
+                    curr_state = NOT_PRESSED;
+                    if (curr_record_state == RECORDING) {
+                        // user prematurely unpressed key, stop recording
+                        curr_record_state = RECORD_NONE;
+                        recs_num_samples[recording_key - 1] = rec_sample_count; // save the recording length
+                        rec_sample_count = 0; // reset sample counter
+                    }
+                }
+
+                break;
+        }
+
+        // if (not_mute)
+        // {
+
+        //     printf("\n playing the tone");
+        //     // Read the ADC
+        //     adc_val = adc_read();
+
+        //     // if playing recording
+        //     if (recording != -1)
+        //     {
+        //         printf("\n taking %d frequency", freq_table[recording - 1]);
+        //         frequency = freq_table[recording - 1];
+        //     }
+        //     else
+        //     {
+        //         printf("\n current frequency");
+        //         frequency = ((uint32_t)adc_val * 10000) / 4095;
+        //     }
+
+        //     // Update DDS phase increment
+        //     phase_incr_main = (frequency * two32) / Fs;
+
+        //     // Print the value
+        //     printf("\nADC value: %d\n", adc_val);
+
+        //     // Yield
+        //     PT_YIELD_usec(100000);
+        // }
+        // printf("\nstart scanning the keypad");
+        // // Scan the keypad!
+        // for (i = 0; i < KEYROWS; i++)
+        // {
+        //     // Set a row high
+        //     gpio_put_masked((0xF << BASE_KEYPAD_PIN),
+        //                     (scancodes[i] << BASE_KEYPAD_PIN));
+        //     // Small delay required
+        //     sleep_us(1);
+        //     // Read the keycode
+        //     keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F);
+        //     // Break if button(s) are pressed
+        //     if ((~keypad) & button)
+        //     {
+        //         printf("\nkeypad is pressed");
+        //         break;
+        //     }
+        // }
+        // // If we found a button . . . MAYBE PRESSED
+        // if ((~keypad) & button)
+        // {
+        //     // Look for a valid keycode.
+        //     for (i = 0; i < NUMKEYS; i++)
+        //     {
+        //         printf("\n%d", i);
+        //         if (keypad == keycodes[i])
+        //         { // pressing on i keypad
+        //             if (count > 3) // key must be held for this many iterations to not count as a fluke
+        //             {
+        //                 if (i != possible)
+        //                 {
+        //                     printf("\npressing different key");
+        //                     possible = i;
+        //                     i = -1;
+        //                     count = 0;
+        //                 }
+        //                 printf("\npressing on %d", i);
+        //                 break;
+        //             }
+        //             else
+        //             {
+        //                 printf("\ni: %d and possible: %d", i, possible);
+        //                 if (i != possible)
+        //                 {
+        //                     printf("\npressing different key");
+        //                     possible = i;
+        //                     i = -1;
+        //                     count = 0;
+        //                 }
+        //                 else
+        //                 {
+        //                     printf("\ndebouncing");
+        //                     count += 1;
+        //                     i = -1;
+        //                 }
+        //             }
+        //             break;
+        //         }
+        //     }
+        //     // If we don't find one, report invalid keycode
+        //     if (i == NUMKEYS)
+        //     {
+        //         printf("invalid keycode");
+        //         // possible = -1;
+        //         (i = -1);
+        //         count = 0;
+        //     }
+        // }
+        // // Otherwise, indicate invalid/non-pressed buttons
+        // else
+        //     (i = -1);
+
+        // // Print key to terminal
+        // // PRESSED STATE
+        // switch (i)
+        // {
+        // case 0: // mute toggle
+        //     not_mute = !not_mute;
+        //     count = 0;
+        //     printf("\n0 pressed, not muted: %d", not_mute);
+        //     break;
+
+        // case 10: // asterisk
+        //     record_mode = !record_mode;
+        //     printf(record_mode ? "\nentering record mode" : "\nleaving record mode");
+        //     break;
+        // case 11: // stop key
+        // case -1: // no key currently settled/pressed
+        //     if (recording != -1)
+        //     { // stop playing recording
+        //         printf("\n stop playback of key %d", recording);
+        //         recording = -1;
+        //     }
+        //     break;
+
+        // default:
+        //     if (i < 1 || i > 9)
+        //         break;
+        //     if (record_mode)
+        //     {
+        //         adc_val = adc_read();
+        //         frequency = ((uint32_t)adc_val * 10000) / 4095;
+        //         freq_table[i - 1] = frequency;
+        //         printf("\nrecorded freq for key %d = %d", i, frequency);
+        //     }
+        //     else
+        //     {
+        //         recording = (recording == i) ? -1 : i;
+        //         printf("\ntoggle for %d, recording=%d", i, recording);
+        //     }
+        //     break;
+        // }
         // printf("\n%d", i);
 
-        PT_YIELD_usec(400000);
+        PT_YIELD_usec(10000); // 100Hz polling rate
     }
     // Indicate thread end
     PT_END(pt);

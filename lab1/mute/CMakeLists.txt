@@ -50,3 +50,9 @@ target_link_libraries(  mute
 
 # must match with executable name
 pico_add_extra_outputs(mute)
+
+# enable printf/stdio output over the USB port (1 = Enabled)
+pico_enable_stdio_usb(mute 1)
+
+# disable printf/stdio output over the physical UART pins (0 = Disabled)
+pico_enable_stdio_uart(mute 0)
