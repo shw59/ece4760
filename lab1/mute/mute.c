@@ -139,7 +139,6 @@ static void alarm_irq(void)
 
     // DDS phase and sine table lookup
     phase_accum_main += phase_incr_main;
-    DAC_data = (DAC_config_chan_A | ((sin_table[phase_accum_main >> 24] + 2048) & 0xffff));
 
     // Perform an SPI transaction
     spi_write16_blocking(SPI_PORT, &DAC_data, 1);
@@ -175,10 +174,10 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         // toggle gpio 25
         gpio_put(LED_PIN, !gpio_get(LED_PIN));
 
-        // Scan the keypad!
+        //=====Scan the keypad!=====
         for (i = 0; i < KEYROWS; i++)
         {
-            // Set a row high
+            // Set row i low
             gpio_put_masked((0xF << BASE_KEYPAD_PIN),
                             (scancodes[i] << BASE_KEYPAD_PIN));
             // Small delay required
@@ -206,8 +205,10 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         else
             (i = -1);
 
-        // Read the ADC
-        adc_val = adc_read();
+        a
+            //=======Sound generation========
+            // Read the ADC
+            adc_val = adc_read();
 
         // Convert ADC reading (0-4095) to frequency (0-10 kHz)
         frequency = ((uint32_t)adc_val * 10000) / 4095;
@@ -291,7 +292,7 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
 
         // printf("DDS Frequency: %u \n", frequency);
 
-        // Enter state machine debouncing
+        //=======Enter state machine debouncing=======
         switch (curr_state)
         {
         case NOT_PRESSED:
@@ -451,6 +452,8 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
 
             break;
         }
+
+        //=====YIELD======
         // if playing sounds, yield for 1.25 milliseconds, allowing it to play sound at 8x the speed
         if (curr_record_state == PLAYBACK || curr_record_state == SEQ_PLAYBACK)
         {
