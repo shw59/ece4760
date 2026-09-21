@@ -212,7 +212,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
 
         // Convert ADC reading (0-4095) to frequency (0-10 kHz)
         frequency = ((uint32_t)adc_val * 10000) / 4095;
-        printf("frequency %d", frequency);
         if (mute)
         {
             // no tone is generated
@@ -222,7 +221,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         if (curr_record_state == PLAYBACK)
         {
             // This iterates through and plays each of the samples recorded for 'recording_key' key.
-            // printf("PLAY \n");
             if (rec_sample_count < recs_num_samples[recording_key - 1])
             {
                 // looks up the frequency in the frequency table for the key and the sound
@@ -247,19 +245,10 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
             {
                 // takes the current key in the sequence
                 int key = compose_table[compose_index] - 1;
-                // printf("\nSEQ_PLAYBACK key = %d", key);
-                // int i = 0;
-                // while (i < compose_len)
-                // {
-                //     // printf("\n%d", compose_table[i]);
-                //     i += 1;
-                // }
 
                 // This iterates through and plays each of the samples recorded for 'key'.
                 if (rec_sample_count < recs_num_samples[key])
                 {
-                    // printf("\nsampling sample = %d", rec_sample_count);
-                    // printf("sample ");
                     // looks up the frequency in the frequency table for the key and the sound
                     frequency = freq_table[key][rec_sample_count];
                     // next sample in recording
@@ -268,9 +257,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                 // finishes iterating through all the samples for 'key'
                 else
                 {
-                    // printf("num of samples: %d", recs_num_samples[key]);
-                    // printf("\nfinished sampling compose id = %d", compose_index);
-
                     // moves to the next sound in the sequence
                     compose_index += 1;
                     // resets sample counter for the next play
@@ -290,13 +276,10 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
         // Update DDS phase increment
         phase_incr_main = (frequency * two32) / Fs;
 
-        // printf("DDS Frequency: %u \n", frequency);
-
         //=======Enter state machine debouncing=======
         switch (curr_state)
         {
         case NOT_PRESSED:
-            // printf("NOT PRESSED\n");
             if (i != -1)
             {
                 // change current state to MAYBE_PRESSED
@@ -308,7 +291,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
             break;
 
         case MAYBE_PRESSED:
-            printf("MAYBE PRESSED\n");
             // if current key i is still key possible
             if (i == possible)
             {
@@ -323,12 +305,10 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                 // compose button pressed
                 else if (i == 11)
                 {
-                    // printf("COMPOSING-------");
                     // Starts recording the sequence of sounds
                     // If recorded already and the compose button is pressed again
                     if (compose_index > 0)
                     {
-                        // printf("playback compose id = %d", compose_index);
                         // change current state
                         curr_record_state = SEQ_PLAYBACK;
                         // set total number of sounds in the sequence
@@ -339,7 +319,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                     else
                     {
                         // start composing
-                        // printf("composing");
                         curr_record_state = COMPOSE;
                     }
                 }
@@ -354,7 +333,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                         // if number of sounds in sequence so far is within the capacity
                         if (compose_index < COMPOSE_SIZE)
                         {
-                            // printf("COMPOSING compose id = %d", compose_index);
                             // instantiate the current sound in the composition with the key i
                             compose_table[compose_index] = i;
                             // move to the next available slot in composition
@@ -363,7 +341,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                         // if number of songs exceeds capacity
                         else
                         {
-                            // printf("STOP compose");
                             // set total number of sounds in the sequence
                             compose_len = compose_index;
                             // reset compose counter in the sequence
@@ -375,7 +352,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
                     else if (curr_record_state == RECORD_EN)
                     {
                         // start recording
-                        // printf("START RECORDING");
                         curr_record_state = RECORDING;
                     }
                     else if (recs_num_samples[i - 1] > 0)
@@ -396,8 +372,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
             break;
 
         case PRESSED:
-            // printf("PRESSED\n");
-
             // senses a different key. could be a different key or a misspress
             if (i != possible)
             {
@@ -407,7 +381,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
             // currently recording on key i
             if (curr_record_state == RECORDING)
             {
-                // printf("RECORDING KEY %d", i);
                 // recording if within recording time limit
                 if (rec_sample_count < MAX_SAMPLE_COUNT)
                 {
@@ -428,8 +401,6 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
             break;
 
         case MAYBE_NOT_PRESSED:
-            // printf("MAYBE NOT PRESSED\n");
-
             // if the current key is still the same key pressed
             if (i == possible)
             {
