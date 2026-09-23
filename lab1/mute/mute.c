@@ -1,7 +1,9 @@
 /**
  * Hunter Adams (vha3@cornell.edu)
  *
- * mute implementatioin
+ * Final Code for bird song synchronization implementation
+ * Camille Yap (cy474), Selena Wang (shw59)
+ * ECE 4760 Fall 2026
  *
  * KEYPAD CONNECTIONS
  *  - GPIO 9   -->  330 ohms  --> Pin 1 (button row 1)
@@ -74,7 +76,6 @@ unsigned int scancodes[KEYROWS] = {0xE, 0xD, 0xB, 0x7};
 unsigned int button = 0x70;
 
 char keytext[40];
-int prev_key = 0;
 
 // ==========================================
 // === protothreads
@@ -82,6 +83,7 @@ int prev_key = 0;
 // protothreads header
 #include "pt_cornell_rp2040_v1_4.h"
 
+// Initializing pins
 #define LED_PIN 25
 #define ADC_PIN 26
 #define ADC_MUX 0
