@@ -1,7 +1,7 @@
 
 /**
  * Hunter Adams (vha3@cornell.edu)
- * 
+ *
  * This demonstration animates two balls bouncing about the screen.
  * Through a serial interface, the user can change the ball color.
  *
@@ -38,202 +38,245 @@
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
+#include <math.h>
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
 // === the fixed point macros ========================================
-typedef signed int fix15 ;
-#define multfix15(a,b) ((fix15)((((signed long long)(a))*((signed long long)(b)))>>15))
-#define float2fix15(a) ((fix15)((a)*32768.0)) // 2^15
-#define fix2float15(a) ((float)(a)/32768.0)
-#define absfix15(a) abs(a) 
+typedef signed int fix15;
+#define multfix15(a, b) ((fix15)((((signed long long)(a)) * ((signed long long)(b))) >> 15))
+#define float2fix15(a) ((fix15)((a) * 32768.0)) // 2^15
+#define fix2float15(a) ((float)(a) / 32768.0)
+#define absfix15(a) abs(a)
 #define int2fix15(a) ((fix15)(a << 15))
 #define fix2int15(a) ((int)(a >> 15))
 #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
-#define divfix(a,b) (fix15)(div_s64s64( (((signed long long)(a)) << 15), ((signed long long)(b))))
+#define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
 
 // Wall detection
-#define hitBottom(b) (b>int2fix15(380))
-#define hitTop(b) (b<int2fix15(100))
-#define hitLeft(a) (a<int2fix15(100))
-#define hitRight(a) (a>int2fix15(540))
-
+#define hitBottom(b) (b > int2fix15(380))
+#define hitTop(b) (b < int2fix15(100))
+#define hitLeft(a) (a < int2fix15(100))
+#define hitRight(a) (a > int2fix15(540))
+#define sqrtfix(a) (float2fix15(sqrt(fix2float15(a))))
 // uS per frame
 #define FRAME_RATE 33000
 
 // the color of the boid
-char color = WHITE ;
+char color = WHITE;
 
 // Boid on core 0
-fix15 boid0_x ;
-fix15 boid0_y ;
-fix15 boid0_vx ;
-fix15 boid0_vy ;
+fix15 boid0_x;
+fix15 boid0_y;
+fix15 boid0_vx;
+fix15 boid0_vy;
+fix15 boid0_rad;
 
 // Boid on core 1
-fix15 boid1_x ;
-fix15 boid1_y ;
-fix15 boid1_vx ;
-fix15 boid1_vy ;
+fix15 boid1_x;
+fix15 boid1_y;
+fix15 boid1_vx;
+fix15 boid1_vy;
+fix15 boid1_rad;
 
+fix15 peg0_x;
+fix15 peg0_y;
+fix15 peg0_radius;
 // Create a semaphore
-semaphore_t draw_semaphore ;
-
+semaphore_t draw_semaphore;
+// volatile current_peg;
 // Create a boid
-void spawnBoid(fix15* x, fix15* y, fix15* vx, fix15* vy, int direction)
+void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int direction, fix15 *rad)
 {
-  // Start in center of screen
-  *x = int2fix15(320) ;
-  *y = int2fix15(240) ;
+  // Start from top of the screen
+  *x = int2fix15(320);
+  *y = int2fix15(0);
   // Choose left or right
-  if (direction) *vx = int2fix15(3) ;
-  else *vx = int2fix15(-3) ;
+  if (direction)
+    *vx = int2fix15(rand() % 1);
+  else
+    *vx = int2fix15(rand() % 1);
   // Moving down
-  *vy = int2fix15(1) ;
+  *vy = int2fix15(0);
+  *rad = int2fix15(4);
 }
 
 // Draw the boundaries
-void drawArena() {
-  drawVLine(100, 100, 280, WHITE) ;
-  drawVLine(540, 100, 280, WHITE) ;
-  drawHLine(100, 100, 440, WHITE) ;
-  drawHLine(100, 380, 440, WHITE) ;
+void drawArena()
+{
+  // drawVLine(100, 100, 280, WHITE); // left
+  // drawVLine(540, 100, 280, WHITE); // right
+  // drawHLine(100, 100, 440, WHITE); // bottom
+  // drawHLine(100, 380, 440, WHITE); // top
+
+  drawCircle(320, 200, 5, BLUE);
 }
 
 // Detect wallstrikes, update velocity and position
-void wallsAndEdges(fix15* x, fix15* y, fix15* vx, fix15* vy)
+void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
 {
   // Reverse direction if we've hit a wall
-  if (hitTop(*y)) {
-    *vy = (-*vy) ;
-    *y  = (*y + int2fix15(5)) ;
-  }
-  if (hitBottom(*y)) {
-    *vy = (-*vy) ;
-    *y  = (*y - int2fix15(5)) ;
-  } 
-  if (hitRight(*x)) {
-    *vx = (-*vx) ;
-    *x  = (*x - int2fix15(5)) ;
-  }
-  if (hitLeft(*x)) {
-    *vx = (-*vx) ;
-    *x  = (*x + int2fix15(5)) ;
-  } 
+  // if (hitTop(*y))
+  // {
+  //   *vy = (-*vy);
+  //   *y = (*y + int2fix15(5));
+  // }
+  // if (hitBottom(*y))
+  // {
+  //   *vy = (-*vy);
+  //   *y = (*y - int2fix15(5));
+  // }
+  // if (hitRight(*x))
+  // {
+  //   *vx = (-*vx);
+  //   *x = (*x - int2fix15(5));
+  // }
+  // if (hitLeft(*x))
+  // {
+  //   *vx = (-*vx);
+  //   *x = (*x + int2fix15(5));
+  // }
 
   // Update position using velocity
-  *x = *x + *vx ;
-  *y = *y + *vy ;
+  *x = *x + *vx;
+  *y = *y + *vy;
+
+  fix15 dx = *x - peg0_x;
+  fix15 dy = *y - peg0_y;
+
+  if (abs(dx) < (boid0_rad + peg0_radius) && (abs(dy) < (boid0_rad + peg0_radius)))
+  {
+    fix15 dist = sqrtfix(dx * dx + dy * dy);
+    if (dist < (boid0_rad + peg0_radius))
+    {
+      fix15 normal_x = dx / dist;
+      fix15 normal_y = dy / dist;
+
+      fix15 intermediate_term = float2fix15(-2 * ((normal_x * fix2float15(*vx)) + (normal_y * fix2float15(*vy))));
+
+      *x = peg0_x + (normal_x * (peg0_radius + boid0_rad + 1));
+      *y = peg0_y + (normal_y * (peg0_radius + boid0_rad + 1));
+      boid0_vx += (normal_x + intermediate_term);
+      boid0_vy += (normal_y + intermediate_term);
+    }
+  }
+  boid0_vy = boid0_vy + 9.8;
 }
 
 // ==================================================
 // === users serial input thread
 // ==================================================
-static PT_THREAD (protothread_serial(struct pt *pt))
+static PT_THREAD(protothread_serial(struct pt *pt))
 {
-    PT_BEGIN(pt);
-    // stores user input
-    static int user_input ;
-    // wait for 0.1 sec
-    PT_YIELD_usec(1000000) ;
-    // announce the threader version
-    sprintf(pt_serial_out_buffer, "Protothreads RP2040 v1.4\n\r");
+  PT_BEGIN(pt);
+  // stores user input
+  static int user_input;
+  // wait for 0.1 sec
+  PT_YIELD_usec(1000000);
+  // announce the threader version
+  sprintf(pt_serial_out_buffer, "Protothreads RP2040 v1.4\n\r");
+  // non-blocking write
+  serial_write;
+  while (1)
+  {
+    // print prompt
+    sprintf(pt_serial_out_buffer, "input a number in the range 1-15: ");
     // non-blocking write
-    serial_write ;
-      while(1) {
-        // print prompt
-        sprintf(pt_serial_out_buffer, "input a number in the range 1-15: ");
-        // non-blocking write
-        serial_write ;
-        // spawn a thread to do the non-blocking serial read
-        serial_read ;
-        // convert input string to number
-        sscanf(pt_serial_in_buffer,"%d", &user_input) ;
-        // update boid color
-        if ((user_input > 0) && (user_input < 16)) {
-          color = (char)user_input ;
-        }
-      } // END WHILE(1)
+    serial_write;
+    // spawn a thread to do the non-blocking serial read
+    serial_read;
+    // convert input string to number
+    sscanf(pt_serial_in_buffer, "%d", &user_input);
+    // update boid color
+    if ((user_input > 0) && (user_input < 16))
+    {
+      color = (char)user_input;
+    }
+  } // END WHILE(1)
   PT_END(pt);
 } // timer thread
 
 // Animation on core 0
-static PT_THREAD (protothread_anim(struct pt *pt))
+static PT_THREAD(protothread_anim(struct pt *pt))
 {
-    // Mark beginning of thread
-    PT_BEGIN(pt);
+  // Mark beginning of thread
+  PT_BEGIN(pt);
 
-    // Spawn a boid
-    spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0);
+  // Spawn a boid
+  spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0, &boid0_rad);
 
-    while(1) {
-      // Wait for the signal that the buffer's changed
-      PT_YIELD_UNTIL(pt, draw_start_signal()) ;
-      // Clear the buffer
-      clearLowFrame(0, BLACK);
-      // Signal core 1 that it can start drawing
-      PT_SEM_SDK_SIGNAL(pt, &draw_semaphore) ;
-      // update boid's position and velocity
-      wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy) ;
-      // draw the boid at its new position
-      fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), 15, color); 
-      // draw the boundaries
-      drawArena() ;
-     // NEVER exit while
-    } // END WHILE(1)
+  while (1)
+  {
+    // Wait for the signal that the buffer's changed
+    PT_YIELD_UNTIL(pt, draw_start_signal());
+    // Clear the buffer
+    clearLowFrame(0, BLACK);
+    // Signal core 1 that it can start drawing
+    PT_SEM_SDK_SIGNAL(pt, &draw_semaphore);
+
+    // update boid's position and velocity
+    wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
+
+    // draw the boid at its new position
+    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), 15, color);
+    // draw the boundaries
+    drawArena();
+    // NEVER exit while
+  } // END WHILE(1)
   PT_END(pt);
 } // animation thread
 
-
 // Animation on core 1
-static PT_THREAD (protothread_anim1(struct pt *pt))
+static PT_THREAD(protothread_anim1(struct pt *pt))
 {
-    // Mark beginning of thread
-    PT_BEGIN(pt);
+  // Mark beginning of thread
+  PT_BEGIN(pt);
 
-    // Spawn a boid
-    spawnBoid(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, 1);
+  // Spawn a boid
+  spawnBoid(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, 1, &boid1_rad);
 
-    while(1) {
-      // Wait for the signal from core 0
-      PT_SEM_SDK_WAIT(pt, &draw_semaphore) ;
-      // update boid's position and velocity
-      wallsAndEdges(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy) ;
-      // draw the boid at its new position
-      fillCircle(fix2int15(boid1_x), fix2int15(boid1_y), 15, color); 
-     // NEVER exit while
-    } // END WHILE(1)
+  while (1)
+  {
+    // Wait for the signal from core 0
+    PT_SEM_SDK_WAIT(pt, &draw_semaphore);
+    // update boid's position and velocity
+    wallsAndEdges(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy);
+    // draw the boid at its new position
+    fillCircle(fix2int15(boid1_x), fix2int15(boid1_y), 15, color);
+    // NEVER exit while
+  } // END WHILE(1)
   PT_END(pt);
 } // animation thread
 
 // ========================================
 // === core 1 main -- started in main below
 // ========================================
-void core1_main(){
+void core1_main()
+{
   // Add animation thread
   pt_add_thread(protothread_anim1);
   // Start the scheduler
-  pt_schedule_start ;
-
+  pt_schedule_start;
 }
 
 // ========================================
 // === main
 // ========================================
 // USE ONLY C-sdk library
-int main(){
-  set_sys_clock_khz(150000, true) ;
+int main()
+{
+  set_sys_clock_khz(150000, true);
   // initialize stio
-  stdio_init_all() ;
+  stdio_init_all();
 
   // initialize VGA
-  initVGA() ;
+  initVGA();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count
-  sem_init(&draw_semaphore, 0, 1) ;
+  sem_init(&draw_semaphore, 0, 1);
 
-  // start core 1 
+  // start core 1
   multicore_reset_core1();
   multicore_launch_core1(&core1_main);
 
@@ -242,5 +285,5 @@ int main(){
   pt_add_thread(protothread_anim);
 
   // start scheduler
-  pt_schedule_start ;
-} 
+  pt_schedule_start;
+}

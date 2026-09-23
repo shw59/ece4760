@@ -31,7 +31,7 @@ void gpio_callback(uint gpio, uint32_t events)
     {
         if (b_value)
         { // clockwise
-2
+
             gpio_put(25, !gpio_get(25));
             count += 1;
         }
@@ -67,6 +67,6 @@ int main()
     {
         // Display number on VGA that increments when rotating clockwise and decrements when rotating counterclockwise
         printf("count: %d\n", count);
-        // sleep_ms(500);
+        sleep_ms(500);
     }
 }

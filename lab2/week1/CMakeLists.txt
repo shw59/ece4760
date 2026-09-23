@@ -21,23 +21,23 @@ cmake_minimum_required(VERSION 3.13)
 include(pico_sdk_import.cmake)
 
 # give the project a name (anything you want)
-project(encoder C CXX ASM)
+project(week1 C CXX ASM)
 
 # initialize the sdk
 pico_sdk_init()
 
 # add executable
-add_executable(encoder)
+add_executable(week1)
 
 # add sources
-target_sources(encoder PRIVATE encoder.c)
+target_sources(week1 PRIVATE encoder.c)
 
 # Pull in our pico_stdlib which pulls in commonly used features
-target_link_libraries(encoder pico_stdlib pico_bootsel_via_double_reset)
+target_link_libraries(week1 pico_stdlib pico_bootsel_via_double_reset)
 
 # create map/bin/hex file etc.
-pico_add_extra_outputs(encoder)
+pico_add_extra_outputs(week1)
 
-pico_enable_stdio_usb(encoder 1)
+pico_enable_stdio_usb(week1 1)
 
-pico_enable_stdio_uart(encoder 0)
+pico_enable_stdio_uart(week1 0)
