@@ -15,9 +15,15 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-// GPIO ISR. Toggles LED
+#define ENCODER_A 3
+#define ENCODER_B 4
+#define SW 5 //
+
+// GPIO ISR on encoder pin A
 void gpio_callback() {
-    gpio_put(25, !gpio_get(25)) ;
+    // Check encoder pin B
+    gpio_get(ENCODER_B);
+    if ()
 }
 
 int main() {
@@ -25,27 +31,19 @@ int main() {
     stdio_init_all();
     printf("GPIO interrupt\n");
 
-    // Configure GPIO interrupt
-    gpio_init(2) ;
-    gpio_set_dir(2, GPIO_IN) ;
-    gpio_pull_down(2) ;
-    gpio_set_irq_enabled_with_callback(2, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+    // Configure GPIO interrupt on encoder pin A
+    gpio_init(ENCODER_A);
+    gpio_set_dir(ENCODER_A, GPIO_IN);
+    gpio_pull_up(ENCODER_A);
+    gpio_set_irq_enabled_with_callback(ENCODER_A, GPIO_IRQ_EDGE_FALL, true, &gpio_callback,);
 
-    // Set GPIO's 3 to output
-    gpio_init(3) ;
-    gpio_init(25) ;
-    gpio_set_dir(3, GPIO_OUT);
-    gpio_set_dir(25, GPIO_OUT);
-
-    // Set GPIO 3 to zero
-    gpio_put(3, 0) ;
+    // Configure GPIO input on one of the button switch pins
+    gpio_init(SW);
+    gpio_set_dir(SW, GPIO_IN);
+    gpio_pull_up(SW);
 
     while (1) {
-        // Raise GPIO 3. This triggers an ISR
-        gpio_put(3, 1) ;
-        sleep_ms(250) ;
-        gpio_put(3, 0) ;
-        sleep_ms(250) ;
+        // Display number on VGA that rotate
     }
 
 }
