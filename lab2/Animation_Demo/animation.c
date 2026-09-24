@@ -39,6 +39,31 @@
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include <math.h>
+#include "hardware/spi.h"
+// Number of samples per period in sine table
+#define sine_table_size 256
+
+// Sine table
+int raw_sin[sine_table_size];
+
+// Table of values to be sent to DAC
+unsigned short DAC_data[sine_table_size];
+
+// Pointer to the address of the DAC data table
+unsigned short *address_pointer = &DAC_data[0];
+
+// A-channel, 1x, active
+#define DAC_config_chan_A 0b0011000000000000
+
+// SPI configurations
+#define PIN_MISO 4
+#define PIN_CS 5
+#define PIN_SCK 6
+#define PIN_MOSI 7
+#define SPI_PORT spi0
+
+// Number of DMA transfers per event
+const uint32_t transfer_count = sine_table_size;
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
@@ -54,14 +79,17 @@ typedef signed int fix15;
 #define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
 
 // Wall detection
-#define hitBottom(b) (b > int2fix15(380))
-#define hitTop(b) (b < int2fix15(100))
-#define hitLeft(a) (a < int2fix15(100))
-#define hitRight(a) (a > int2fix15(540))
+#define hitBottom(b) (b > int2fix15(480))
+#define hitTop(b) (b < int2fix15(0))
+#define hitLeft(a) (a < int2fix15(0))
+#define hitRight(a) (a > int2fix15(640))
 #define sqrtfix(a) (float2fix15(sqrt(fix2float15(a))))
 // uS per frame
 #define FRAME_RATE 33000
-
+#define GRAVITY float2fix15(0.37)
+#define BALL_RADIUS int2fix15(4)
+#define PEG_RADIUS int2fix15(6)
+#define BOUNCINESS float2fix15(0.5)
 // the color of the boid
 char color = WHITE;
 
@@ -77,28 +105,36 @@ fix15 boid1_x;
 fix15 boid1_y;
 fix15 boid1_vx;
 fix15 boid1_vy;
-fix15 boid1_rad;
+fix15 boid1_rad = BALL_RADIUS;
 
 fix15 peg0_x;
 fix15 peg0_y;
-fix15 peg0_radius;
+fix15 peg0_radius = PEG_RADIUS;
 // Create a semaphore
 semaphore_t draw_semaphore;
+int data_chan;
+int ctrl_chan;
 // volatile current_peg;
+void trigger_sound()
+{
+  dma_start_channel_mask(1u << ctrl_chan);
+}
 // Create a boid
 void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int direction, fix15 *rad)
 {
   // Start from top of the screen
   *x = int2fix15(320);
   *y = int2fix15(0);
+  float random_vx = ((float)rand() / (float)RAND_MAX) - 0.5f;
+  *vx = float2fix15(random_vx);
   // Choose left or right
-  if (direction)
-    *vx = int2fix15(rand() % 1);
-  else
-    *vx = int2fix15(rand() % 1);
+  // if (direction)
+  //   *vx = int2fix15(rand() % 1);
+  // else
+  //   *vx = int2fix15(rand() % 1);
   // Moving down
   *vy = int2fix15(0);
-  *rad = int2fix15(4);
+  *rad = BALL_RADIUS;
 }
 
 // Draw the boundaries
@@ -109,34 +145,12 @@ void drawArena()
   // drawHLine(100, 100, 440, WHITE); // bottom
   // drawHLine(100, 380, 440, WHITE); // top
 
-  drawCircle(320, 200, 5, BLUE);
+  drawCircle(320, 200, PEG_RADIUS, BLUE);
 }
 
 // Detect wallstrikes, update velocity and position
 void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
 {
-  // Reverse direction if we've hit a wall
-  // if (hitTop(*y))
-  // {
-  //   *vy = (-*vy);
-  //   *y = (*y + int2fix15(5));
-  // }
-  // if (hitBottom(*y))
-  // {
-  //   *vy = (-*vy);
-  //   *y = (*y - int2fix15(5));
-  // }
-  // if (hitRight(*x))
-  // {
-  //   *vx = (-*vx);
-  //   *x = (*x - int2fix15(5));
-  // }
-  // if (hitLeft(*x))
-  // {
-  //   *vx = (-*vx);
-  //   *x = (*x + int2fix15(5));
-  // }
-
   // Update position using velocity
   *x = *x + *vx;
   *y = *y + *vy;
@@ -146,21 +160,47 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
 
   if (abs(dx) < (boid0_rad + peg0_radius) && (abs(dy) < (boid0_rad + peg0_radius)))
   {
-    fix15 dist = sqrtfix(dx * dx + dy * dy);
+    fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
     if (dist < (boid0_rad + peg0_radius))
     {
-      fix15 normal_x = dx / dist;
-      fix15 normal_y = dy / dist;
+      fix15 normal_x = divfix(dx, dist);
+      fix15 normal_y = divfix(dy, dist);
 
-      fix15 intermediate_term = float2fix15(-2 * ((normal_x * fix2float15(*vx)) + (normal_y * fix2float15(*vy))));
+      fix15 intermediate_term = float2fix15(-2 * (multfix15(normal_x, *vx) + multfix15(normal_y, *vy)));
 
-      *x = peg0_x + (normal_x * (peg0_radius + boid0_rad + 1));
-      *y = peg0_y + (normal_y * (peg0_radius + boid0_rad + 1));
-      boid0_vx += (normal_x + intermediate_term);
-      boid0_vy += (normal_y + intermediate_term);
+      *x = peg0_x + multfix15(normal_x, (peg0_radius + boid0_rad + int2fix15(1)));
+      *y = peg0_y + multfix15(normal_y, (peg0_radius + boid0_rad + int2fix15(1)));
+      *vx = *vx + (multfix15(normal_x, intermediate_term));
+      *vy = *vy + (multfix15(normal_x, intermediate_term));
+
+      trigger_sound();
+      // lose energy from bounciness
+      *vx = multfix15(BOUNCINESS, *vx);
+      *vy = multfix15(BOUNCINESS, *vy);
     }
   }
-  boid0_vy = boid0_vy + 9.8;
+  if (hitBottom(*y))
+  {
+    spawnBoid(x, y, vx, vy, 0, rad);
+  }
+
+  // Reverse direction if we've hit a wall
+  if (hitTop(*y))
+  {
+    *vy = (-*vy);
+    *y = (*y + int2fix15(5));
+  }
+  if (hitRight(*x))
+  {
+    *vx = (-*vx);
+    *x = (*x - int2fix15(5));
+  }
+  if (hitLeft(*x))
+  {
+    *vx = (-*vx);
+    *x = (*x + int2fix15(5));
+  }
+  *vy = *vy + GRAVITY;
 }
 
 // ==================================================
@@ -218,7 +258,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
 
     // draw the boid at its new position
-    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), 15, color);
+    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), BALL_RADIUS, color);
     // draw the boundaries
     drawArena();
     // NEVER exit while
@@ -259,6 +299,75 @@ void core1_main()
   pt_schedule_start;
 }
 
+void init_audio()
+{
+  // Initialize SPI channel (channel, baud rate set to 20MHz)
+  spi_init(SPI_PORT, 20000000);
+
+  // Format SPI channel (channel, data bits per transfer, polarity, phase, order)
+  spi_set_format(SPI_PORT, 16, 0, 0, 0);
+
+  // Map SPI signals to GPIO ports, acts like framed SPI with this CS mapping
+  gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
+  gpio_set_function(PIN_CS, GPIO_FUNC_SPI);
+  gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
+  gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+
+  // Build sine table and DAC data table
+  int i;
+  for (i = 0; i < (sine_table_size); i++)
+  {
+    raw_sin[i] = (int)(2047 * sin((float)i * 6.283 / (float)sine_table_size) + 2047); // 12 bit
+    DAC_data[i] = DAC_config_chan_A | (raw_sin[i] & 0x0fff);
+  }
+
+  // Select DMA channels
+  data_chan = dma_claim_unused_channel(true);
+
+  ctrl_chan = dma_claim_unused_channel(true);
+
+  // Setup the control channel
+  dma_channel_config c = dma_channel_get_default_config(ctrl_chan); // default configs
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);           // 32-bit txfers
+  channel_config_set_read_increment(&c, false);                     // no read incrementing
+  channel_config_set_write_increment(&c, false);                    // no write incrementing
+  channel_config_set_chain_to(&c, data_chan);                       // chain to data channel
+
+  dma_channel_configure(
+      ctrl_chan,                        // Channel to be configured
+      &c,                               // The configuration we just created
+      &dma_hw->ch[data_chan].read_addr, // Write address (data channel read address)
+      &address_pointer,                 // Read address (POINTER TO AN ADDRESS)
+      1,                                // Number of transfers
+      false                             // Don't start immediately
+  );
+
+  // Setup the data channel
+  dma_channel_config c2 = dma_channel_get_default_config(data_chan); // Default configs
+  channel_config_set_transfer_data_size(&c2, DMA_SIZE_16);           // 16-bit txfers
+  channel_config_set_read_increment(&c2, true);                      // yes read incrementing
+  channel_config_set_write_increment(&c2, false);                    // no write incrementing
+  // (X/Y)*sys_clk, where X is the first 16 bytes and Y is the second
+  // sys_clk is 125 MHz unless changed in code. Configured to ~44 kHz
+  dma_timer_set_fraction(0, 0x0017, 0xffff);
+  // 0x3b means timer0 (see SDK manual)
+  channel_config_set_dreq(&c2, 0x3b); // DREQ paced by timer 0
+  // chain to the controller DMA channel
+  // channel_config_set_chain_to(&c2, ctrl_chan); // Chain to control channel
+
+  dma_channel_configure(
+      data_chan,                 // Channel to be configured
+      &c2,                       // The configuration we just created
+      &spi_get_hw(SPI_PORT)->dr, // write address (SPI data register)
+      DAC_data,                  // The initial read address
+      sine_table_size,           // Number of transfers
+      false                      // Don't start immediately.
+  );
+
+  // start the control channel
+  // dma_start_channel_mask(1u << ctrl_chan);
+}
+
 // ========================================
 // === main
 // ========================================
@@ -271,6 +380,9 @@ int main()
 
   // initialize VGA
   initVGA();
+
+  // initialize audio
+  // init_audio();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count
