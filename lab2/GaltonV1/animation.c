@@ -90,11 +90,37 @@ typedef signed int fix15;
 #define BALL_RADIUS int2fix15(4)
 #define PEG_RADIUS int2fix15(6)
 #define BOUNCINESS float2fix15(0.5)
-
+#define NUM_PEGS int2fix15(136)
+#define NUM_BALLS int2fix15(10)
+#define HORIZONTAL_SEP int2fix15(38)
+#define VERTICAL_SEP int2fix15(19)
+#define NUM_LEVELS 16
 fix15 SEPARATION_DIST = BALL_RADIUS + PEG_RADIUS;
 
 // the color of the boid
 char color = WHITE;
+
+typedef struct
+{
+  fix15 x;
+  fix15 y;
+  fix15 vx;
+  fix15 vy;
+  fix15 rad;
+  int current_peg;
+  int prev_peg;
+} Ball;
+
+Ball balls[NUM_BALLS];
+
+typedef struct
+{
+  fix15 x;
+  fix15 y;
+  fix15, rad
+} Peg;
+
+Peg pegs[NUM_PEGS];
 
 // Boid on core 0
 fix15 boid0_x;
@@ -122,8 +148,43 @@ void trigger_sound()
 {
   dma_start_channel_mask(1u << ctrl_chan);
 }
+
+void initBoids()
+{
+  for (int i = 0; i < NUM_BALLS; i++)
+  {
+    spawnBoid(
+        balls[i].x,
+        balls[i].y,
+        balls[i].vx,
+        balls[i].vy,
+        balls[i].rad, );
+
+    balls[i].prev_peg = -1;
+    balls[i].current_peg = -1;
+  }
+}
+void initPegs()
+{
+  int peg_index = 0;
+
+  for (int level = 0; level < NUM_LEVELS; level++)
+  {
+    int num_pegs_level = level + 1;
+
+    for (int j = 0; j < num_pegs_level; j++)
+    {
+      fix15 offset = int2fix15(2 * j - level);
+
+      pegs[peg_index].x = int2fix15(320) + multfix15(HORIZONTAL_SEP, offset);
+      pegs[peg_index].y = multfix15(VERTICAL_SEP, int2fix15(level));
+      pegs[peg_index].rad = PEG_RADIUS;
+      peg_index += 1;
+    }
+  }
+}
 // Create a boid
-void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int direction, fix15 *rad)
+void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
 {
   // Start from top of the screen
   *x = int2fix15(320);
@@ -152,34 +213,41 @@ void drawArena()
 }
 
 // Detect wallstrikes, update velocity and position
-void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
+void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *curr, int *prev)
 {
-  // Update position using velocity
   *x = *x + *vx;
   *y = *y + *vy;
-
-  fix15 dx = *x - peg0_x;
-  fix15 dy = *y - peg0_y;
-
-  if (abs(dx) < (SEPARATION_DIST) && (abs(dy) < (SEPARATION_DIST)))
+  for (int peg_index = 0; peg_index < NUM_PEGS; peg_index += 1)
   {
-    fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
-    if (dist < (SEPARATION_DIST))
+
+    // Update position using velocity
+    Peg *peg = &pegs[peg_index];
+
+    fix15 dx = *x - *p.x;
+    fix15 dy = *y - *p.y;
+
+    if (abs(dx) < (SEPARATION_DIST) && (abs(dy) < (SEPARATION_DIST)))
     {
-      fix15 normal_x = divfix(dx, dist);
-      fix15 normal_y = divfix(dy, dist);
+      fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
+      if (dist < (SEPARATION_DIST))
+      {
+        fix15 normal_x = divfix(dx, dist);
+        fix15 normal_y = divfix(dy, dist);
 
-      fix15 intermediate_term = float2fix15(-2 * (multfix15(normal_x, *vx) + multfix15(normal_y, *vy)));
+        fix15 intermediate_term = float2fix15(-2 * (multfix15(normal_x, *vx) + multfix15(normal_y, *vy)));
 
-      *x = peg0_x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
-      *y = peg0_y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
-      *vx = *vx + (multfix15(normal_x, intermediate_term));
-      *vy = *vy + (multfix15(normal_x, intermediate_term));
-
-      trigger_sound();
-      // lose energy from bounciness
-      *vx = multfix15(BOUNCINESS, *vx);
-      *vy = multfix15(BOUNCINESS, *vy);
+        *x = *p.x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
+        *y = *p.y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
+        *vx = *vx + (multfix15(normal_x, intermediate_term));
+        *vy = *vy + (multfix15(normal_x, intermediate_term));
+        if (*curr != *prev)
+        {
+          trigger_sound();
+          // lose energy from bounciness
+          *vx = multfix15(BOUNCINESS, *vx);
+          *vy = multfix15(BOUNCINESS, *vy);
+        }
+      }
     }
   }
   if (hitBottom(*y))
@@ -246,7 +314,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
   PT_BEGIN(pt);
 
   // Spawn a boid
-  spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0, &boid0_rad);
+  // spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0, &boid0_rad);
 
   while (1)
   {
@@ -257,13 +325,24 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     // Signal core 1 that it can start drawing
     PT_SEM_SDK_SIGNAL(pt, &draw_semaphore);
 
-    // update boid's position and velocity
-    wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
+    for (int i = 0; i < NUM_BALLS; i++)
+    {
+      wallsAndEdges(&balls[i].x, &balls[i].y, &balls[i].vx, &balls[i].vy, &balls[i].current_peg, &balls[i].prev_peg);
 
-    // draw the boid at its new position
-    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), BALL_RADIUS, color);
-    // draw the boundaries
-    drawArena();
+      fillCircle(
+          fix2int15(balls[i].x),
+          fix2int15(balls[i].y),
+          fix2int15(balls[i].radius),
+          color);
+    }
+
+    // // update boid's position and velocity
+    // // wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
+
+    // // draw the boid at its new position
+    // fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), BALL_RADIUS, color);
+    // // draw the boundaries
+    // drawArena();
     // NEVER exit while
   } // END WHILE(1)
   PT_END(pt);
@@ -386,6 +465,8 @@ int main()
 
   // initialize audio
   // init_audio();
+  // initBoids();
+  // initPegs();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count
