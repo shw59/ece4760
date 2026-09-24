@@ -62,6 +62,11 @@ unsigned short *address_pointer = &DAC_data[0];
 #define PIN_MOSI 7
 #define SPI_PORT spi0
 
+// Encoder
+#define ENCODER_A 26
+#define ENCODER_B 27
+// #define SW 
+
 // Number of DMA transfers per event
 const uint32_t transfer_count = sine_table_size;
 // Include protothreads
@@ -90,11 +95,15 @@ typedef signed int fix15;
 #define BALL_RADIUS int2fix15(4)
 #define PEG_RADIUS int2fix15(6)
 #define BOUNCINESS float2fix15(0.5)
-#define NUM_PEGS int2fix15(136)
-#define NUM_BALLS int2fix15(10)
+#define NUM_BALLS 10
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
+#define NUM_PEGS 136
+// int NUM_PEGS = NUM_LEVELS * (NUM_LEVELS + 1) / 2;
+
+#define BALL_RADIUS_INT 4
+#define PEG_RADIUS_INT 6
 fix15 SEPARATION_DIST = BALL_RADIUS + PEG_RADIUS;
 
 // the color of the boid
@@ -117,32 +126,48 @@ typedef struct
 {
   fix15 x;
   fix15 y;
-  fix15, rad
+  fix15 rad;
 } Peg;
 
 Peg pegs[NUM_PEGS];
 
-// Boid on core 0
-fix15 boid0_x;
-fix15 boid0_y;
-fix15 boid0_vx;
-fix15 boid0_vy;
-fix15 boid0_rad;
-
-// Boid on core 1
-fix15 boid1_x;
-fix15 boid1_y;
-fix15 boid1_vx;
-fix15 boid1_vy;
-fix15 boid1_rad = BALL_RADIUS;
-
-fix15 peg0_x;
-fix15 peg0_y;
-fix15 peg0_radius = PEG_RADIUS;
 // Create a semaphore
 semaphore_t draw_semaphore;
 int data_chan;
 int ctrl_chan;
+
+volatile bool b_value;
+volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+// GPIO ISR on encoder pin As
+void gpio_callback(uint gpio, uint32_t events)
+{
+
+    // Check encoder pin B
+    b_value = gpio_get(ENCODER_B);
+    if (gpio == ENCODER_A)
+    {
+        if (b_value)
+        { // clockwise
+            gpio_put(25, !gpio_get(25));
+            count += 1;
+        }
+        else
+        { // counter-clockwise
+            count -= 1;
+        }
+    }
+}
+// Create a boid
+void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
+{
+  // Start from top of the screen
+  *x = int2fix15(320);
+  *y = int2fix15(0);
+  float random_vx = ((float)rand() / (float)RAND_MAX) - 0.5f;
+  *vx = float2fix15(random_vx);
+  *vy = int2fix15(0);
+  *rad = BALL_RADIUS;
+}
 // volatile current_peg;
 void trigger_sound()
 {
@@ -154,77 +179,55 @@ void initBoids()
   for (int i = 0; i < NUM_BALLS; i++)
   {
     spawnBoid(
-        balls[i].x,
-        balls[i].y,
-        balls[i].vx,
-        balls[i].vy,
-        balls[i].rad, );
+        &balls[i].x,
+        &balls[i].y,
+        &balls[i].vx,
+        &balls[i].vy,
+        &balls[i].rad);
 
     balls[i].prev_peg = -1;
     balls[i].current_peg = -1;
   }
 }
+
 void initPegs()
 {
-  int peg_index = 0;
+    int peg_index = 0;
 
-  for (int level = 0; level < NUM_LEVELS; level++)
-  {
-    int num_pegs_level = level + 1;
-
-    for (int j = 0; j < num_pegs_level; j++)
+    for (int level = 0; level < NUM_LEVELS; level++)
     {
-      fix15 offset = int2fix15(2 * j - level);
+        int num_pegs_level = level + 1;
 
-      pegs[peg_index].x = int2fix15(320) + multfix15(HORIZONTAL_SEP, offset);
-      pegs[peg_index].y = multfix15(VERTICAL_SEP, int2fix15(level));
-      pegs[peg_index].rad = PEG_RADIUS;
-      peg_index += 1;
+        for (int j = 0; j < num_pegs_level; j++)
+        {
+            // Horizontal position:
+            // center the row around x = 320
+            int x = 320 + (2 * j - level) * 38;
+
+            // Vertical position
+            int y = 100 + level * 19;
+
+            pegs[peg_index].x = int2fix15(x);
+            pegs[peg_index].y = int2fix15(y);
+            pegs[peg_index].rad = PEG_RADIUS;
+
+            peg_index++;
+        }
     }
-  }
-}
-// Create a boid
-void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
-{
-  // Start from top of the screen
-  *x = int2fix15(320);
-  *y = int2fix15(0);
-  float random_vx = ((float)rand() / (float)RAND_MAX) - 0.5f;
-  *vx = float2fix15(random_vx);
-  // Choose left or right
-  // if (direction)
-  //   *vx = int2fix15(rand() % 1);
-  // else
-  //   *vx = int2fix15(rand() % 1);
-  // Moving down
-  *vy = int2fix15(0);
-  *rad = BALL_RADIUS;
-}
-
-// Draw the boundaries
-void drawArena()
-{
-  // drawVLine(100, 100, 280, WHITE); // left
-  // drawVLine(540, 100, 280, WHITE); // right
-  // drawHLine(100, 100, 440, WHITE); // bottom
-  // drawHLine(100, 380, 440, WHITE); // top
-
-  drawCircle(320, 200, PEG_RADIUS, BLUE);
 }
 
 // Detect wallstrikes, update velocity and position
-void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *curr, int *prev)
+void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *curr, int *prev)
 {
+  // Update position using velocity
   *x = *x + *vx;
   *y = *y + *vy;
   for (int peg_index = 0; peg_index < NUM_PEGS; peg_index += 1)
   {
-
-    // Update position using velocity
     Peg *peg = &pegs[peg_index];
 
-    fix15 dx = *x - *p.x;
-    fix15 dy = *y - *p.y;
+    fix15 dx = *x - peg->x;
+    fix15 dy = *y - peg->y;
 
     if (abs(dx) < (SEPARATION_DIST) && (abs(dy) < (SEPARATION_DIST)))
     {
@@ -234,12 +237,14 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *curr, int *pre
         fix15 normal_x = divfix(dx, dist);
         fix15 normal_y = divfix(dy, dist);
 
-        fix15 intermediate_term = float2fix15(-2 * (multfix15(normal_x, *vx) + multfix15(normal_y, *vy)));
+        fix15 dot = multfix15(normal_x, *vx) + multfix15(normal_y, *vy);
+        fix15 intermediate_term = multfix15(float2fix15(-2), dot);
 
-        *x = *p.x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
-        *y = *p.y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
+        *x = peg->x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
+        *y = peg->y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
         *vx = *vx + (multfix15(normal_x, intermediate_term));
-        *vy = *vy + (multfix15(normal_x, intermediate_term));
+        *vy = *vy + (multfix15(normal_y, intermediate_term));
+
         if (*curr != *prev)
         {
           trigger_sound();
@@ -252,7 +257,7 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *curr, int *pre
   }
   if (hitBottom(*y))
   {
-    spawnBoid(x, y, vx, vy, 0, rad);
+    spawnBoid(x, y, vx, vy, rad);
   }
 
   // Reverse direction if we've hit a wall
@@ -274,47 +279,12 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *curr, int *pre
   *vy = *vy + GRAVITY;
 }
 
-// ==================================================
-// === users serial input thread
-// ==================================================
-static PT_THREAD(protothread_serial(struct pt *pt))
-{
-  PT_BEGIN(pt);
-  // stores user input
-  static int user_input;
-  // wait for 0.1 sec
-  PT_YIELD_usec(1000000);
-  // announce the threader version
-  sprintf(pt_serial_out_buffer, "Protothreads RP2040 v1.4\n\r");
-  // non-blocking write
-  serial_write;
-  while (1)
-  {
-    // print prompt
-    sprintf(pt_serial_out_buffer, "input a number in the range 1-15: ");
-    // non-blocking write
-    serial_write;
-    // spawn a thread to do the non-blocking serial read
-    serial_read;
-    // convert input string to number
-    sscanf(pt_serial_in_buffer, "%d", &user_input);
-    // update boid color
-    if ((user_input > 0) && (user_input < 16))
-    {
-      color = (char)user_input;
-    }
-  } // END WHILE(1)
-  PT_END(pt);
-} // timer thread
-
 // Animation on core 0
 static PT_THREAD(protothread_anim(struct pt *pt))
 {
   // Mark beginning of thread
   PT_BEGIN(pt);
-
-  // Spawn a boid
-  // spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0, &boid0_rad);
+  static char count_str[20];
 
   while (1)
   {
@@ -327,15 +297,24 @@ static PT_THREAD(protothread_anim(struct pt *pt))
 
     for (int i = 0; i < NUM_BALLS; i++)
     {
-      wallsAndEdges(&balls[i].x, &balls[i].y, &balls[i].vx, &balls[i].vy, &balls[i].current_peg, &balls[i].prev_peg);
-
       fillCircle(
           fix2int15(balls[i].x),
           fix2int15(balls[i].y),
-          fix2int15(balls[i].radius),
+          fix2int15(balls[i].rad),
           color);
+      wallsAndEdges(&balls[i].x, &balls[i].y, &balls[i].vx, &balls[i].vy, &balls[i].rad, &balls[i].current_peg, &balls[i].prev_peg);
+
+      // Draw encoder count
+      sprintf(count_str, "Count: %d", count);
+      drawTextAscii(10, 10, count_str, WHITE, BLACK);
+      
     }
 
+    for (int i = 0; i < NUM_PEGS; i++)
+    {
+      fillCircle(fix2int15(pegs[i].x), fix2int15(pegs[i].y), PEG_RADIUS_INT, BLUE);
+    }
+    
     // // update boid's position and velocity
     // // wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
 
@@ -347,39 +326,6 @@ static PT_THREAD(protothread_anim(struct pt *pt))
   } // END WHILE(1)
   PT_END(pt);
 } // animation thread
-
-// Animation on core 1
-static PT_THREAD(protothread_anim1(struct pt *pt))
-{
-  // Mark beginning of thread
-  PT_BEGIN(pt);
-
-  // Spawn a boid
-  spawnBoid(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, 1, &boid1_rad);
-
-  while (1)
-  {
-    // Wait for the signal from core 0
-    PT_SEM_SDK_WAIT(pt, &draw_semaphore);
-    // update boid's position and velocity
-    wallsAndEdges(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy);
-    // draw the boid at its new position
-    fillCircle(fix2int15(boid1_x), fix2int15(boid1_y), 15, color);
-    // NEVER exit while
-  } // END WHILE(1)
-  PT_END(pt);
-} // animation thread
-
-// ========================================
-// === core 1 main -- started in main below
-// ========================================
-void core1_main()
-{
-  // Add animation thread
-  pt_add_thread(protothread_anim1);
-  // Start the scheduler
-  pt_schedule_start;
-}
 
 void init_audio()
 {
@@ -460,24 +406,40 @@ int main()
   // initialize stio
   stdio_init_all();
 
+  // Configure GPIO interrupt on encoder pin A
+  gpio_init(ENCODER_A);
+  gpio_set_dir(ENCODER_A, GPIO_IN);
+  gpio_pull_up(ENCODER_A);
+  gpio_set_irq_enabled_with_callback(ENCODER_A, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+
+  // Configure pin B
+  gpio_init(ENCODER_B);
+  gpio_set_dir(ENCODER_B, GPIO_IN);
+  gpio_pull_up(ENCODER_B);
+
+  // Configure GPIO input on one of the button switch pins
+  // gpio_init(SW);
+  // gpio_set_dir(SW, GPIO_IN);
+  // gpio_pull_up(SW);
+
   // initialize VGA
   initVGA();
 
   // initialize audio
-  // init_audio();
-  // initBoids();
-  // initPegs();
+  init_audio();
+  initBoids();
+  initPegs();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count
   sem_init(&draw_semaphore, 0, 1);
 
   // start core 1
-  multicore_reset_core1();
-  multicore_launch_core1(&core1_main);
+  // multicore_reset_core1();
+  // multicore_launch_core1(&core1_main);
 
-  // add threads
-  pt_add_thread(protothread_serial);
+  // // add threads
+  // pt_add_thread(protothread_serial);
   pt_add_thread(protothread_anim);
 
   // start scheduler

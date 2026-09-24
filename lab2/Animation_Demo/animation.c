@@ -62,6 +62,11 @@ unsigned short *address_pointer = &DAC_data[0];
 #define PIN_MOSI 7
 #define SPI_PORT spi0
 
+// Encoder
+#define ENCODER_A 26
+#define ENCODER_B 27
+// #define SW 
+
 // Number of DMA transfers per event
 const uint32_t transfer_count = sine_table_size;
 // Include protothreads
@@ -73,7 +78,7 @@ typedef signed int fix15;
 #define float2fix15(a) ((fix15)((a) * 32768.0)) // 2^15
 #define fix2float15(a) ((float)(a) / 32768.0)
 #define absfix15(a) abs(a)
-#define int2fix15(a) ((fix15)(a << 15))
+#define int2fix15(a) ((fix15)a << 15)
 #define fix2int15(a) ((int)(a >> 15))
 #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
 #define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
@@ -91,6 +96,9 @@ typedef signed int fix15;
 #define PEG_RADIUS int2fix15(6)
 #define BOUNCINESS float2fix15(0.5)
 
+#define BALL_RADIUS_INT 4
+#define PEG_RADIUS_INT 6
+
 fix15 SEPARATION_DIST = BALL_RADIUS + PEG_RADIUS;
 
 // the color of the boid
@@ -101,17 +109,39 @@ fix15 boid0_x;
 fix15 boid0_y;
 fix15 boid0_vx;
 fix15 boid0_vy;
-fix15 boid0_rad;
+fix15 boid0_rad = BALL_RADIUS;
 
 // Boid on core 1
-fix15 boid1_x;
-fix15 boid1_y;
-fix15 boid1_vx;
-fix15 boid1_vy;
-fix15 boid1_rad = BALL_RADIUS;
+// fix15 boid1_x;
+// fix15 boid1_y;
+// fix15 boid1_vx;
+// fix15 boid1_vy;
+// fix15 boid1_rad ;
 
-fix15 peg0_x;
-fix15 peg0_y;
+volatile bool b_value;
+volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+// GPIO ISR on encoder pin As
+void gpio_callback(uint gpio, uint32_t events)
+{
+
+    // Check encoder pin B
+    b_value = gpio_get(ENCODER_B);
+    if (gpio == ENCODER_A)
+    {
+        if (b_value)
+        { // clockwise
+            gpio_put(25, !gpio_get(25));
+            count += 1;
+        }
+        else
+        { // counter-clockwise
+            count -= 1;
+        }
+    }
+}
+
+fix15 peg0_x = int2fix15(320);
+fix15 peg0_y = int2fix15(200);
 fix15 peg0_radius = PEG_RADIUS;
 // Create a semaphore
 semaphore_t draw_semaphore;
@@ -140,19 +170,19 @@ void spawnBoid(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int direction, fix15 *r
   *rad = BALL_RADIUS;
 }
 
-// Draw the boundaries
-void drawArena()
-{
-  // drawVLine(100, 100, 280, WHITE); // left
-  // drawVLine(540, 100, 280, WHITE); // right
-  // drawHLine(100, 100, 440, WHITE); // bottom
-  // drawHLine(100, 380, 440, WHITE); // top
+// // Draw the boundaries
+// void drawArena()
+// {
+//   // drawVLine(100, 100, 280, WHITE); // left
+//   // drawVLine(540, 100, 280, WHITE); // right
+//   // drawHLine(100, 100, 440, WHITE); // bottom
+//   // drawHLine(100, 380, 440, WHITE); // top
 
-  drawCircle(320, 200, PEG_RADIUS, BLUE);
-}
+  
+// }
 
-// Detect wallstrikes, update velocity and position
-void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
+// Detect wallstrikes/collisions, update velocity and position
+void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
 {
   // Update position using velocity
   *x = *x + *vx;
@@ -164,17 +194,21 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
   if (abs(dx) < (SEPARATION_DIST) && (abs(dy) < (SEPARATION_DIST)))
   {
     fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
+    printf("oh no");
+
     if (dist < (SEPARATION_DIST))
     {
       fix15 normal_x = divfix(dx, dist);
       fix15 normal_y = divfix(dy, dist);
 
-      fix15 intermediate_term = float2fix15(-2 * (multfix15(normal_x, *vx) + multfix15(normal_y, *vy)));
+      fix15 dot = multfix15(normal_x, *vx) + multfix15(normal_y, *vy);
+      fix15 intermediate_term = multfix15(float2fix15(-2), dot);
 
+      printf("boing");
       *x = peg0_x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
       *y = peg0_y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
       *vx = *vx + (multfix15(normal_x, intermediate_term));
-      *vy = *vy + (multfix15(normal_x, intermediate_term));
+      *vy = *vy + (multfix15(normal_y, intermediate_term));
 
       trigger_sound();
       // lose energy from bounciness
@@ -209,35 +243,35 @@ void wallsAndEdges(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy)
 // ==================================================
 // === users serial input thread
 // ==================================================
-static PT_THREAD(protothread_serial(struct pt *pt))
-{
-  PT_BEGIN(pt);
-  // stores user input
-  static int user_input;
-  // wait for 0.1 sec
-  PT_YIELD_usec(1000000);
-  // announce the threader version
-  sprintf(pt_serial_out_buffer, "Protothreads RP2040 v1.4\n\r");
-  // non-blocking write
-  serial_write;
-  while (1)
-  {
-    // print prompt
-    sprintf(pt_serial_out_buffer, "input a number in the range 1-15: ");
-    // non-blocking write
-    serial_write;
-    // spawn a thread to do the non-blocking serial read
-    serial_read;
-    // convert input string to number
-    sscanf(pt_serial_in_buffer, "%d", &user_input);
-    // update boid color
-    if ((user_input > 0) && (user_input < 16))
-    {
-      color = (char)user_input;
-    }
-  } // END WHILE(1)
-  PT_END(pt);
-} // timer thread
+// static PT_THREAD(protothread_serial(struct pt *pt))
+// {
+//   PT_BEGIN(pt);
+//   // // stores user input
+//   // static int user_input;
+//   // // wait for 0.1 sec
+//   // PT_YIELD_usec(1000000);
+//   // // announce the threader version
+//   // sprintf(pt_serial_out_buffer, "Protothreads RP2040 v1.4\n\r");
+//   // // non-blocking write
+//   // serial_write;
+//   // while (1)
+//   // {
+//   //   // print prompt
+//   //   sprintf(pt_serial_out_buffer, "input a number in the range 1-15: ");
+//   //   // non-blocking write
+//   //   serial_write;
+//   //   // spawn a thread to do the non-blocking serial read
+//   //   serial_read;
+//   //   // convert input string to number
+//   //   sscanf(pt_serial_in_buffer, "%d", &user_input);
+//   //   // update boid color
+//   //   if ((user_input > 0) && (user_input < 16))
+//   //   {
+//   //     color = (char)user_input;
+//   //   }
+//   // } // END WHILE(1)
+//   PT_END(pt);
+// } // timer thread
 
 // Animation on core 0
 static PT_THREAD(protothread_anim(struct pt *pt))
@@ -247,6 +281,8 @@ static PT_THREAD(protothread_anim(struct pt *pt))
 
   // Spawn a boid
   spawnBoid(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, 0, &boid0_rad);
+
+  static char count_str[20];
 
   while (1)
   {
@@ -258,49 +294,55 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     PT_SEM_SDK_SIGNAL(pt, &draw_semaphore);
 
     // update boid's position and velocity
-    wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy);
-
+    wallsAndEdges(&boid0_x, &boid0_y, &boid0_vx, &boid0_vy, &boid0_rad);
+    // Draw peg
+    fillCircle(320, 200, PEG_RADIUS_INT, BLUE);
     // draw the boid at its new position
-    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), BALL_RADIUS, color);
-    // draw the boundaries
-    drawArena();
+    fillCircle(fix2int15(boid0_x), fix2int15(boid0_y), BALL_RADIUS_INT, color);
+
+    // Draw encoder count
+    sprintf(count_str, "Count: %d", count);
+    drawTextAscii(10, 10, count_str, WHITE, BLACK);
+    // // draw the boundaries
+    // drawArena();
+
     // NEVER exit while
   } // END WHILE(1)
   PT_END(pt);
 } // animation thread
 
 // Animation on core 1
-static PT_THREAD(protothread_anim1(struct pt *pt))
-{
-  // Mark beginning of thread
-  PT_BEGIN(pt);
+// static PT_THREAD(protothread_anim1(struct pt *pt))
+// {
+//   // Mark beginning of thread
+//   PT_BEGIN(pt);
 
-  // Spawn a boid
-  spawnBoid(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, 1, &boid1_rad);
+//   // Spawn a boid
+//   // spawnBoid(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, 1, &boid1_rad);
 
-  while (1)
-  {
-    // Wait for the signal from core 0
-    PT_SEM_SDK_WAIT(pt, &draw_semaphore);
-    // update boid's position and velocity
-    wallsAndEdges(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy);
-    // draw the boid at its new position
-    fillCircle(fix2int15(boid1_x), fix2int15(boid1_y), 15, color);
-    // NEVER exit while
-  } // END WHILE(1)
-  PT_END(pt);
-} // animation thread
+//   // while (1)
+//   // {
+//   //   // Wait for the signal from core 0
+//   //   PT_SEM_SDK_WAIT(pt, &draw_semaphore);
+//   //   // update boid's position and velocity
+//   //   wallsAndEdges(&boid1_x, &boid1_y, &boid1_vx, &boid1_vy, &boid0_rad);
+//   //   // draw the boid at its new position
+//   //   fillCircle(fix2int15(boid1_x), fix2int15(boid1_y), 15, color);
+//   //   // NEVER exit while
+//   // } // END WHILE(1)
+//   PT_END(pt);
+// } // animation thread
 
 // ========================================
 // === core 1 main -- started in main below
 // ========================================
-void core1_main()
-{
-  // Add animation thread
-  pt_add_thread(protothread_anim1);
-  // Start the scheduler
-  pt_schedule_start;
-}
+// void core1_main()
+// {
+//   // Add animation thread
+//   pt_add_thread(protothread_anim1);
+//   // Start the scheduler
+//   pt_schedule_start;
+// }
 
 void init_audio()
 {
@@ -381,22 +423,37 @@ int main()
   // initialize stio
   stdio_init_all();
 
+  // Configure GPIO interrupt on encoder pin A
+  gpio_init(ENCODER_A);
+  gpio_set_dir(ENCODER_A, GPIO_IN);
+  gpio_pull_up(ENCODER_A);
+  gpio_set_irq_enabled_with_callback(ENCODER_A, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+
+  // Configure pin B
+  gpio_init(ENCODER_B);
+  gpio_set_dir(ENCODER_B, GPIO_IN);
+  gpio_pull_up(ENCODER_B);
+
+  // Configure GPIO input on one of the button switch pins
+  // gpio_init(SW);
+  // gpio_set_dir(SW, GPIO_IN);
+  // gpio_pull_up(SW);
+
   // initialize VGA
   initVGA();
 
   // initialize audio
-  // init_audio();
+  init_audio();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count
   sem_init(&draw_semaphore, 0, 1);
 
-  // start core 1
-  multicore_reset_core1();
-  multicore_launch_core1(&core1_main);
+  // // start core 1
+  // multicore_reset_core1();
+  // multicore_launch_core1(&core1_main);
 
   // add threads
-  pt_add_thread(protothread_serial);
   pt_add_thread(protothread_anim);
 
   // start scheduler

@@ -51,6 +51,7 @@ target_link_libraries(  VGA_Animation_Demo
                         hardware_adc
                         hardware_irq
                         hardware_clocks
+                        hardware_spi
                         hardware_pll)
 
 # must match with executable name

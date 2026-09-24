@@ -31,7 +31,6 @@ void gpio_callback(uint gpio, uint32_t events)
     {
         if (b_value)
         { // clockwise
-2
             gpio_put(25, !gpio_get(25));
             count += 1;
         }
