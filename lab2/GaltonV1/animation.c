@@ -39,7 +39,6 @@
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include "hardware/spi.h"
-#include <time.h>
 
 // Number of samples per period in sine table
 #define sine_table_size 256
@@ -66,7 +65,7 @@ unsigned short *address_pointer = &DAC_data[0];
 // Encoder
 #define ENCODER_A 26
 #define ENCODER_B 27
-// #define SW
+#define SW 28
 
 // Number of DMA transfers per event
 const uint32_t transfer_count = sine_table_size;
@@ -95,7 +94,7 @@ typedef signed int fix15;
 #define GRAVITY float2fix15(0.37)
 #define BALL_RADIUS int2fix15(4)
 #define PEG_RADIUS int2fix15(6)
-#define BOUNCINESS float2fix15(0.5)
+#define BOUNCINESS float2fix15(0.3)
 #define MAX_NUM_BALLS 3000 // max number of balls that can be spawned
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
@@ -149,10 +148,15 @@ Peg pegs[NUM_PEGS];
 semaphore_t enc_semaphore;
 int data_chan;
 int ctrl_chan;
-struct timespec start, curr_time;
+
+// time elapsed
+uint64_t start_us;
+
+// volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
 volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+// volatile fix15 bounciness = float2fix15(0.3); // stores the current bounciness value
 // GPIO ISR on encoder pin As
 void gpio_callback(uint gpio, uint32_t events)
 {
@@ -162,18 +166,44 @@ void gpio_callback(uint gpio, uint32_t events)
   {
     if (b_value)
     { // clockwise
-      gpio_put(25, !gpio_get(25));
+      // if (mode == 0) {
+      //   count += 1;
+      // } else if (mode == 1) {
+      //   bounciness += float2fix15(0.1);
+      // }
       count += 1;
     }
     else
     { // counter-clockwise
+      // if (mode == 0) {
+      //   if (count > 0)
+      //   {
+      //     count -= 1;
+      //   }
+      // } else if (mode == 1) {
+      //   if (bounciness > 0.0)
+      //   bounciness -= float2fix15(0.1);
+      // }
+
       if (count > 0)
-      {
-        count -= 1;
-      }
+        {
+          count -= 1;
+        }
     }
   }
 }
+
+// encoder button interrupt handler
+// void switch_callback(uint gpio, uint32_t events)
+// {
+//   // encoder has been pressed, switch between ball count/bounciness
+//   if (mode == 0) {
+//     mode = 1;
+//   } else if (mode == 1) {
+//     mode = 0;
+//   }
+// }
+
 // Create a Ball
 void spawnBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
 {
@@ -282,7 +312,7 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
         *vx = *vx + (multfix15(normal_x, intermediate_term));
         *vy = *vy + (multfix15(normal_y, intermediate_term));
 
-        if (peg_index != *prev)
+        if (peg_index != *prev) // if we hit a new peg
         {
           trigger_sound();
           // lose energy from bounciness
@@ -341,12 +371,12 @@ static PT_THREAD(protothread_anim(struct pt *pt))
 
     // Draw count of balls
     sprintf(count_str, "Active particles: %d", count);
-    drawTextAscii(10, 15, count_str, WHITE, BLACK);
+    drawTextAscii(10, 22, count_str, WHITE, BLACK);
 
     // Draw time
-    timespec_get(&curr_time, TIME_UTC);
-    sprintf(time_str, "Time elapsed: %d", (curr_time.tv_sec - start.tv_sec));
-    drawTextAscii(10, 20, time_str, WHITE, BLACK);
+    uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
+    sprintf(time_str, "Time elapsed: %d", elapsed_time);
+    drawTextAscii(10, 34, time_str, WHITE, BLACK);
 
     // Draw histogram
     int max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
@@ -502,6 +532,7 @@ int main()
   // gpio_init(SW);
   // gpio_set_dir(SW, GPIO_IN);
   // gpio_pull_up(SW);
+  // gpio_set_irq_enabled_with_callback(SW, GPIO_IRQ_EDGE_FALL, true, &switch_callback);
 
   // initialize VGA
   initVGA();
@@ -520,7 +551,7 @@ int main()
   // multicore_launch_core1(&core1_main);
 
   // // add threads
-  timespec_get(&start, TIME_UTC);
+  start_us = time_us_64();
   pt_add_thread(protothread_anim);
 
   // start scheduler

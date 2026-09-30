@@ -15,9 +15,9 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-#define ENCODER_A 5
-#define ENCODER_B 6
-#define SW 7
+#define ENCODER_A 26
+#define ENCODER_B 27
+#define SW 28
 
 volatile bool b_value;
 volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
@@ -40,6 +40,13 @@ void gpio_callback(uint gpio, uint32_t events)
         }
     }
 }
+
+// void switch_callback(uint gpio, uint32_t events)
+// {
+//   // encoder has been pressed, switch between ball count/bounciness
+//   count = 0;
+// }
+
 int main()
 {
     // Initialize stdio
@@ -61,6 +68,7 @@ int main()
     gpio_init(SW);
     gpio_set_dir(SW, GPIO_IN);
     gpio_pull_up(SW);
+    gpio_set_irq_enabled_with_callback(ENCODER_A, GPIO_IRQ_EDGE_FALL, true, &switch_callback);
 
     while (1)
     {
