@@ -39,6 +39,8 @@
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include "hardware/spi.h"
+#include <time.h>
+
 // Number of samples per period in sine table
 #define sine_table_size 256
 
@@ -64,7 +66,7 @@ unsigned short *address_pointer = &DAC_data[0];
 // Encoder
 #define ENCODER_A 26
 #define ENCODER_B 27
-// #define SW 
+// #define SW
 
 // Number of DMA transfers per event
 const uint32_t transfer_count = sine_table_size;
@@ -94,7 +96,7 @@ typedef signed int fix15;
 #define BALL_RADIUS int2fix15(4)
 #define PEG_RADIUS int2fix15(6)
 #define BOUNCINESS float2fix15(0.5)
-#define NUM_BALLS 10
+#define MAX_NUM_BALLS 3000 // max number of balls that can be spawned
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
@@ -103,20 +105,20 @@ typedef signed int fix15;
 #define BALL_RADIUS_INT 4
 #define PEG_RADIUS_INT 6
 #define SEPARATION_DIST (BALL_RADIUS + PEG_RADIUS)
-#define HORIZONTAL_SEP_INT 38   // spacing between pegs in the same row
-#define VERTICAL_SEP_INT   19   // spacing between rows
+#define HORIZONTAL_SEP_INT 38 // spacing between pegs in the same row
+#define VERTICAL_SEP_INT 19   // spacing between rows
 
 // histogram stuff
 #define NUM_BINS (NUM_LEVELS + 1)
-#define NUM_GAPS (NUM_BINS - 2) // 15 bins between the bottom-row pegs
-#define BIN_LEFT_X 35 // x of leftmost bottom-row peg
-#define BIN_RIGHT_X (BIN_LEFT_X + NUM_GAPS * BIN_WIDTH) // 605, x of rightmost bottom-row peg
-#define BIN_WIDTH HORIZONTAL_SEP_INT // 38px
+#define NUM_GAPS (NUM_BINS - 2)                                                                   // 15 bins between the bottom-row pegs
+#define BIN_LEFT_X 35                                                                             // x of leftmost bottom-row peg
+#define BIN_RIGHT_X (BIN_LEFT_X + NUM_GAPS * BIN_WIDTH)                                           // 605, x of rightmost bottom-row peg
+#define BIN_WIDTH HORIZONTAL_SEP_INT                                                              // 38px
 #define BIN_LINE_Y (100 + (NUM_LEVELS - 1) * VERTICAL_SEP_INT + PEG_RADIUS_INT + BALL_RADIUS_INT) // ball finish line below last row of pegs (395)
-#define HIST_BASE_Y 480   // bars grow upward from the bottom of the screen
-#define HIST_MAX_H  80    // tallest a bar can be
+#define HIST_BASE_Y 480                                                                           // bars grow upward from the bottom of the screen
+#define HIST_MAX_H 80                                                                             // tallest a bar can be
 
-int bins[NUM_BINS]; // histogram bins
+int bins[NUM_BINS];            // histogram bins
 volatile int total_fallen = 0; // total balls fallen through the board
 
 // the color of the Ball
@@ -132,7 +134,7 @@ typedef struct
   int prev_peg;
 } Ball;
 
-Ball balls[NUM_BALLS];
+Ball balls[MAX_NUM_BALLS];
 
 typedef struct
 {
@@ -147,6 +149,7 @@ Peg pegs[NUM_PEGS];
 semaphore_t enc_semaphore;
 int data_chan;
 int ctrl_chan;
+struct timespec start, curr_time;
 
 volatile bool b_value;
 volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
@@ -157,15 +160,18 @@ void gpio_callback(uint gpio, uint32_t events)
   b_value = gpio_get(ENCODER_B);
   if (gpio == ENCODER_A)
   {
-      if (b_value)
-      { // clockwise
-          gpio_put(25, !gpio_get(25));
-          count += 1;
+    if (b_value)
+    { // clockwise
+      gpio_put(25, !gpio_get(25));
+      count += 1;
+    }
+    else
+    { // counter-clockwise
+      if (count > 0)
+      {
+        count -= 1;
       }
-      else
-      { // counter-clockwise
-          count -= 1;
-      }
+    }
   }
 }
 // Create a Ball
@@ -187,7 +193,7 @@ void trigger_sound()
 
 void initBalls()
 {
-  for (int i = 0; i < NUM_BALLS; i++)
+  for (int i = 0; i < MAX_NUM_BALLS; i++)
   {
     spawnBall(
         &balls[i].x,
@@ -202,22 +208,22 @@ void initBalls()
 
 void initPegs()
 {
-    int peg_index = 0;
+  int peg_index = 0;
 
-    for (int level = 0; level < NUM_LEVELS; level++)
+  for (int level = 0; level < NUM_LEVELS; level++)
+  {
+    for (int j = 0; j <= level; j++)
     {
-        for (int j = 0; j <= level; j++)
-        {
-            // Center the row at x = 320; adjacent pegs are HORIZONTAL_SEP apart
-            int x = 320 + (2 * j - level) * (HORIZONTAL_SEP_INT / 2);
-            int y = 100 + level * VERTICAL_SEP_INT;
+      // Center the row at x = 320; adjacent pegs are HORIZONTAL_SEP apart
+      int x = 320 + (2 * j - level) * (HORIZONTAL_SEP_INT / 2);
+      int y = 100 + level * VERTICAL_SEP_INT;
 
-            pegs[peg_index].x = int2fix15(x);
-            pegs[peg_index].y = int2fix15(y);
-            pegs[peg_index].rad = PEG_RADIUS;
-            peg_index++;
-        }
+      pegs[peg_index].x = int2fix15(x);
+      pegs[peg_index].y = int2fix15(y);
+      pegs[peg_index].rad = PEG_RADIUS;
+      peg_index++;
     }
+  }
 }
 
 // update a ball position/status
@@ -229,13 +235,18 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
     int x_int = fix2int15(*x);
     int b_idx; // bin index
 
-    if (x_int < BIN_LEFT_X) { // left of all pegs
-      b_idx = 0; 
-    } else if (x_int >= BIN_RIGHT_X) {  // right of all pegs
-      b_idx = NUM_BINS - 1; 
-    } else { // between 2 pegs
-      b_idx = 1 + (x_int - BIN_LEFT_X) / BIN_WIDTH; 
-    }           
+    if (x_int < BIN_LEFT_X)
+    { // left of all pegs
+      b_idx = 0;
+    }
+    else if (x_int >= BIN_RIGHT_X)
+    { // right of all pegs
+      b_idx = NUM_BINS - 1;
+    }
+    else
+    { // between 2 pegs
+      b_idx = 1 + (x_int - BIN_LEFT_X) / BIN_WIDTH;
+    }
 
     bins[b_idx]++;
     total_fallen++;
@@ -282,7 +293,7 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
       }
     }
   }
-  
+
   if (hitBottom(*y))
   {
     spawnBall(x, y, vx, vy, rad);
@@ -313,25 +324,37 @@ static PT_THREAD(protothread_anim(struct pt *pt))
 {
   // Mark beginning of thread
   PT_BEGIN(pt);
-  static char count_str[20];
+  static char count_str[30];
+  static char fallen_str[30];
+  static char time_str[30];
 
   while (1)
   {
-        // Wait for the signal that the buffer's changed
+    // Wait for the signal that the buffer's changed
     PT_YIELD_UNTIL(pt, draw_start_signal());
     // Clear the buffer
     clearLowFrame(0, BLACK);
-    
-    // Draw encoder count
-    sprintf(count_str, "Count: %d", count);
-    drawTextAscii(10, 10, count_str, WHITE, BLACK);
+
+    // Draw count of fallen balls
+    sprintf(fallen_str, "Total particles dropped: %d", total_fallen);
+    drawTextAscii(10, 10, fallen_str, WHITE, BLACK);
+
+    // Draw count of balls
+    sprintf(count_str, "Active particles: %d", count);
+    drawTextAscii(10, 15, count_str, WHITE, BLACK);
+
+    // Draw time
+    timespec_get(&curr_time, TIME_UTC);
+    sprintf(time_str, "Time elapsed: %d", (curr_time.tv_sec - start.tv_sec));
+    drawTextAscii(10, 20, time_str, WHITE, BLACK);
 
     // Draw histogram
-    int max_bin = 1;   // avoid dividing by 0 if no balls have fallen yet
+    int max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
     // find the tallest bin in the histogram
     for (int k = 0; k < NUM_BINS; k++)
     {
-      if (bins[k] > max_bin) max_bin = bins[k];
+      if (bins[k] > max_bin)
+        max_bin = bins[k];
     }
 
     // normalize everything else to the tallest bin and draw
@@ -343,24 +366,27 @@ static PT_THREAD(protothread_anim(struct pt *pt))
       {
         // find coordinates of bin k that we are drawing in
         int left, width;
-        if (k == 0) { 
+        if (k == 0)
+        {
           left = 0;
-          width = BIN_LEFT_X;      
+          width = BIN_LEFT_X;
         }
-        else if (k == NUM_BINS - 1) { 
-          left = BIN_RIGHT_X; 
-          width = 640 - BIN_RIGHT_X; 
+        else if (k == NUM_BINS - 1)
+        {
+          left = BIN_RIGHT_X;
+          width = 640 - BIN_RIGHT_X;
         }
-        else { 
-          left = BIN_LEFT_X + (k - 1) * BIN_WIDTH; 
-          width = BIN_WIDTH; 
+        else
+        {
+          left = BIN_LEFT_X + (k - 1) * BIN_WIDTH;
+          width = BIN_WIDTH;
         }
 
         fillRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
       }
     }
 
-    for (int i = 0; i < NUM_BALLS; i++)
+    for (int i = 0; i < count; i++)
     {
       fillCircle(
           fix2int15(balls[i].x),
@@ -494,6 +520,7 @@ int main()
   // multicore_launch_core1(&core1_main);
 
   // // add threads
+  timespec_get(&start, TIME_UTC);
   pt_add_thread(protothread_anim);
 
   // start scheduler
