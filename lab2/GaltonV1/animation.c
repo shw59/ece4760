@@ -112,7 +112,9 @@ typedef signed int fix15;
 #define BIN_LEFT_X 35 // x of leftmost bottom-row peg
 #define BIN_RIGHT_X (BIN_LEFT_X + NUM_GAPS * BIN_WIDTH) // 605, x of rightmost bottom-row peg
 #define BIN_WIDTH HORIZONTAL_SEP_INT // 38px
-#define BIN_LINE_Y (100 + (NUM_LEVELS - 1) * VERTICAL_SEP_INT + PEG_RADIUS_INT + BALL_RADIUS_INT) // 395; ball finish line below last row of pegs
+#define BIN_LINE_Y (100 + (NUM_LEVELS - 1) * VERTICAL_SEP_INT + PEG_RADIUS_INT + BALL_RADIUS_INT) // ball finish line below last row of pegs (395)
+#define HIST_BASE_Y 480   // bars grow upward from the bottom of the screen
+#define HIST_MAX_H  80    // tallest a bar can be
 
 int bins[NUM_BINS]; // histogram bins
 volatile int total_fallen = 0; // total balls fallen through the board
