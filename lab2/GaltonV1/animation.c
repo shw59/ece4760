@@ -324,6 +324,40 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     sprintf(count_str, "Count: %d", count);
     drawTextAscii(10, 10, count_str, WHITE, BLACK);
 
+    // Draw histogram
+    int max_bin = 1;   // avoid dividing by 0 if no balls have fallen yet
+    // find the tallest bin in the histogram
+    for (int k = 0; k < NUM_BINS; k++)
+    {
+      if (bins[k] > max_bin) max_bin = bins[k];
+    }
+
+    // normalize everything else to the tallest bin and draw
+    for (int k = 0; k < NUM_BINS; k++)
+    {
+      int h = (bins[k] * HIST_MAX_H) / max_bin; // normalize # of balls in each bar to a pixel fraction of the tallest one
+
+      if (h > 0) // don't draw bins with 0 balls
+      {
+        // find coordinates of bin k that we are drawing in
+        int left, width;
+        if (k == 0) { 
+          left = 0;
+          width = BIN_LEFT_X;      
+        }
+        else if (k == NUM_BINS - 1) { 
+          left = BIN_RIGHT_X; 
+          width = 640 - BIN_RIGHT_X; 
+        }
+        else { 
+          left = BIN_LEFT_X + (k - 1) * BIN_WIDTH; 
+          width = BIN_WIDTH; 
+        }
+
+        fillRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
+      }
+    }
+
     for (int i = 0; i < NUM_BALLS; i++)
     {
       fillCircle(
@@ -423,6 +457,7 @@ int main()
 
   // initialize LED
   gpio_init(25);
+  gpio_set_dir(25, GPIO_OUT);
 
   // Configure GPIO interrupt on encoder pin A
   gpio_init(ENCODER_A);
