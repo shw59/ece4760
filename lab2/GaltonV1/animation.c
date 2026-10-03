@@ -100,7 +100,9 @@ typedef signed int fix15;
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
 #define NUM_PEGS (NUM_LEVELS * (NUM_LEVELS + 1) / 2)
-
+#define SPAWN_X int2fix15(320)
+#define SPAWN_Y int2fix15(0)
+#define VY_INITIAL int2fix15(0)
 #define BALL_RADIUS_INT 4
 #define PEG_RADIUS_INT 6
 #define SEPARATION_DIST (BALL_RADIUS + PEG_RADIUS)
@@ -120,6 +122,22 @@ typedef signed int fix15;
 int bins[NUM_BINS];            // histogram bins
 volatile int total_fallen = 0; // total balls fallen through the board
 
+float Q_rsqrt(fix15 number)
+{
+  fix15 i;
+  fix15 x2, y;
+  const fix15 threehalfs = 1.5F;
+
+  x2 = multfix15(number, 0.5F);
+  y = number;
+  i = *(fix15 *)&y;
+  i = 0x5f3759df - (i >> 1);
+  y = *(fix15 *)&i;
+  y = multfix15(y, (threehalfs - multfix15(multfix15(x2, y), y)));
+
+  return y;
+}
+
 // the color of the Ball
 char color = WHITE;
 
@@ -129,8 +147,8 @@ typedef struct
   fix15 y;
   fix15 vx;
   fix15 vy;
-  fix15 rad;
-  int prev_peg;
+  fix15 rad; // remove for memory
+  uint8_t prev_peg;
 } Ball;
 
 Ball balls[MAX_NUM_BALLS];
@@ -139,7 +157,7 @@ typedef struct
 {
   fix15 x;
   fix15 y;
-  fix15 rad;
+  fix15 rad; // remove for memory
 } Peg;
 
 Peg pegs[NUM_PEGS];
@@ -155,8 +173,8 @@ uint64_t start_us;
 // volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
-volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
-// volatile fix15 bounciness = float2fix15(0.3); // stores the current bounciness value
+volatile int count = 0;                       // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+volatile fix15 bounciness = float2fix15(0.3); // stores the current bounciness value
 // GPIO ISR on encoder pin As
 void gpio_callback(uint gpio, uint32_t events)
 {
@@ -186,9 +204,9 @@ void gpio_callback(uint gpio, uint32_t events)
       // }
 
       if (count > 0)
-        {
-          count -= 1;
-        }
+      {
+        count -= 1;
+      }
     }
   }
 }
@@ -205,15 +223,16 @@ void gpio_callback(uint gpio, uint32_t events)
 // }
 
 // Create a Ball
-void spawnBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad)
+void spawnBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad) // remove rad for memory
 {
   // Start from top of the screen
-  *x = int2fix15(320);
-  *y = int2fix15(0);
+  *x = SPAWN_X;
+  *y = SPAWN_Y;
+  // *vx = ((fix15)(rand() & 0xffff) >> 15) + ((fix15)(rand() & 0xffff) >> 16) - 49152 // 1.5 * 32768 = 49152
   float random_vx = ((float)rand() / (float)RAND_MAX) - 0.5f;
   *vx = float2fix15(random_vx);
-  *vy = int2fix15(0);
-  *rad = BALL_RADIUS;
+  *vy = VY_INITIAL;
+  *rad = BALL_RADIUS; // remove for mem
 }
 
 void trigger_sound()
@@ -231,6 +250,11 @@ void initBalls()
         &balls[i].vx,
         &balls[i].vy,
         &balls[i].rad);
+    // spawnBall(
+    //     &balls[i].x,
+    //     &balls[i].y,
+    //     &balls[i].vx,
+    //     &balls[i].vy,);
 
     balls[i].prev_peg = -1;
   }
@@ -250,14 +274,14 @@ void initPegs()
 
       pegs[peg_index].x = int2fix15(x);
       pegs[peg_index].y = int2fix15(y);
-      pegs[peg_index].rad = PEG_RADIUS;
+      pegs[peg_index].rad = PEG_RADIUS; // remove for memory
       peg_index++;
     }
   }
 }
 
 // update a ball position/status
-void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
+void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev) // remove rad again
 {
   // did ball cross histogram finish line right below last peg row?
   if (*y > int2fix15(BIN_LINE_Y))
@@ -283,6 +307,8 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
 
     // respawn since the ball is counted in the histogram now
     spawnBall(x, y, vx, vy, rad);
+    // spawnBall(x, y, vx, vy);
+
     *prev = -1;
   }
 
@@ -301,6 +327,8 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
       fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
       if (dist < (SEPARATION_DIST))
       {
+        // fix15 normal_x = multfix15(dx, Q_rsqrt(dist));
+        // fix15 normal_y = multfix15(dy, Q_rsqrt(dist));
         fix15 normal_x = divfix(dx, dist);
         fix15 normal_y = divfix(dy, dist);
 
@@ -327,6 +355,7 @@ void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, fix15 *rad, int *prev)
   if (hitBottom(*y))
   {
     spawnBall(x, y, vx, vy, rad);
+    // spawnBall(x, y, vx, vy);
     *prev = -1;
   }
 
@@ -423,7 +452,13 @@ static PT_THREAD(protothread_anim(struct pt *pt))
           fix2int15(balls[i].y),
           fix2int15(balls[i].rad),
           color);
+      // fillCircle(
+      //     fix2int15(balls[i].x),
+      //     fix2int15(balls[i].y),
+      //     fix2int15(BALL_RADIUS),
+      //     color);
       updateBall(&balls[i].x, &balls[i].y, &balls[i].vx, &balls[i].vy, &balls[i].rad, &balls[i].prev_peg);
+      // updateBall(&balls[i].x, &balls[i].y, &balls[i].vx, &balls[i].vy, &balls[i].prev_peg);
     }
 
     for (int i = 0; i < NUM_PEGS; i++)
