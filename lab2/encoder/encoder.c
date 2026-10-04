@@ -21,8 +21,10 @@
 
 volatile bool b_value;
 volatile int count = 0; // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
-volatile int bounciness = 0.3;
+volatile double bounciness = 0.3;
 volatile int sw_state = 0;
+volatile uint32_t last_sw_time = 0;
+
 // GPIO ISR on encoder pin As
 void gpio_callback(uint gpio, uint32_t events)
 {
@@ -48,16 +50,27 @@ void gpio_callback(uint gpio, uint32_t events)
         }
         else
         { // counter-clockwise
-            if (bounciness > 0)
+            if (sw_state == 1)
             {
-                bounciness -= 0.01;
+                if (bounciness > 0)
+                {
+                    bounciness -= 0.01;
+                }
             }
             else
+            {
                 count -= 1;
+            }
         }
     }
     else if (gpio == SW)
     {
+        uint32_t now = time_us_32();
+        if (now - last_sw_time > 200000) // 200 ms
+        {
+            sw_state = !sw_state;
+            last_sw_time = now;
+        }
         sw_state = !sw_state;
     }
 }
@@ -89,7 +102,8 @@ int main()
     {
         // Display number on VGA that increments when rotating clockwise and decrements when rotating counterclockwise
         printf("count: %d\n", count);
-        printf("bounciness: %d\n", bounciness);
+        printf("bounciness: %f\n", bounciness);
+        printf("sw: %d\n", sw_state);
         // sleep_ms(500);
     }
 }
