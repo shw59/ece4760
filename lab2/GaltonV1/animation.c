@@ -534,26 +534,46 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     }
 
     // don't start the next frame (and its clear) until core 1 is done drawing
-    PT_YIELD_UNTIL(pt, sem_try_acquire(&done_sem));
+    PT_SEM_SDK_WAIT(pt, &done_sem);
     gpio_put(25, time_us_64() - t0 > 16667); // LED FLASHING
 
   } // END WHILE(1)
   PT_END(pt);
 } // animation thread
-void core1_main()
+
+// Animation on core 1
+static PT_THREAD (protothread_anim1(struct pt *pt))
 {
+  // Mark beginning of thread
+  PT_BEGIN(pt);
+
   while (1)
   {
-    sem_acquire_blocking(&phys_sem); // wait until core 0 has cleared the frame
+    PT_SEM_SDK_WAIT(pt, &phys_sem);
+
     int n = frame_n;
     for (int i = n / 2; i < n; i++)
     {
       updateBall(&balls[i], 1);
       drawCircle(fix2int15(balls[i].x), fix2int15(balls[i].y), BALL_RADIUS_INT, color);
     }
+
     sem_release(&done_sem);
+  } // END WHILE(1)
+  PT_END(pt);
+} // animation thread
+
+void core1_main()
+{
+  while (1)
+  {
+    // Add animation thread
+    pt_add_thread(protothread_anim1);
+    // Start the scheduler
+    pt_schedule_start;
   }
 }
+
 void init_audio()
 {
   // Initialize SPI channel (channel, baud rate set to 20MHz)
