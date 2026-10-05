@@ -91,7 +91,7 @@ typedef signed int fix15;
 #define sqrtfix(a) (float2fix15(sqrtf(fix2float15(a))))
 // uS per frame
 #define FRAME_RATE 33000
-#define GRAVITY float2fix15(0.37)
+#define GRAVITY 12124 // float2fix15(0.37) = 0.37 * 32768
 #define BALL_RADIUS int2fix15(3)
 #define PEG_RADIUS int2fix15(6)
 // #define BOUNCINESS float2fix15(0.3)
@@ -200,10 +200,10 @@ uint64_t start_us;
 volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
-volatile int count = 5000;                // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
-volatile float bounciness = 0.3;          // stores the current bounciness value
-volatile fix15 bounce = float2fix15(0.3); // could make a new global temp var for fix15
-volatile bool reset_hist = false;         // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
+volatile int count = 5000;        // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+volatile float bounciness = 0.3;  // stores the current bounciness value
+volatile fix15 bounce = 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
+volatile bool reset_hist = false; // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
 
 // GPIO ISR on encoder pin As
 void gpio_callback(uint gpio, uint32_t events)
@@ -328,7 +328,8 @@ static inline void collide(Ball *ball, int peg_index)
       // fix15 normal_y = divfix(dy, inv);
 
       fix15 dot = multfix15(normal_x, ball->vx) + multfix15(normal_y, ball->vy);
-      fix15 intermediate_term = multfix15(float2fix15(-2), dot);
+      // fix15 intermediate_term = multfix15(float2fix15(-2), dot);
+      fix15 intermediate_term = multfix15((-65536), dot); // float2fix15(-2) = -2 * 32768
 
       ball->x = peg->x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
       ball->y = peg->y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
@@ -522,7 +523,8 @@ static PT_THREAD(protothread_anim(struct pt *pt))
           width = BIN_WIDTH;
         }
 
-        fillRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
+        // fillRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
+        drawRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
       }
     }
 
@@ -602,7 +604,8 @@ void init_audio()
   channel_config_set_write_increment(&c2, false);                    // no write incrementing
   // (X/Y)*sys_clk, where X is the first 16 bytes and Y is the second
   // sys_clk is 125 MHz unless changed in code. Configured to ~44 kHz
-  dma_timer_set_fraction(0, 0x0017, 0xffff);
+  // dma_timer_set_fraction(0, 0x0017, 0xffff);
+  dma_timer_set_fraction(0, 0x0012, 0xffff); // sys_clk is 250 MHz now so just adjusted back something close to 44 KHz
   // 0x3b means timer0 (see SDK manual)
   channel_config_set_dreq(&c2, 0x3b); // DREQ paced by timer 0
   // chain to the controller DMA channel
@@ -627,7 +630,9 @@ void init_audio()
 // USE ONLY C-sdk library
 int main()
 {
-  set_sys_clock_khz(150000, true);
+  // set_sys_clock_khz(150000, true);
+  set_sys_clock_khz(250000, true); // 250MHz internal clock - 10 cycles per pixel
+
   // initialize stdio
   stdio_init_all();
 
