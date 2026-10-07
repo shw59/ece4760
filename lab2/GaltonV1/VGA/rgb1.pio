@@ -1,0 +1,64 @@
+;
+; Hunter Adams (vha3@cornell.edu)
+; RGB generation for VGA driver
+; mod by Bruce Land for 16 colors
+; mod for 1 bit/pixel (black/white) -- 32 pixels per FIFO word, LSB first
+;
+; Each pixel bit is fanned out to all 4 color pins:
+;   out x, 1      x = 0 or 1
+;   jmp x--       x = 0xFFFFFFFF (bit was 0) or 0 (bit was 1)
+;   mov pins, ~x  pins = 0000 (black) or 1111 (white)
+;
+; NOTE: hsync (9) + vsync (14) + this (9) = 32 instructions = all of pio0.
+; Do not add instructions here without moving this program to pio1.
+
+; Program name
+.program rgb1
+; pixelhold sets the pixel period: (4 + pixelhold) cycles per pixel
+; must be 10 cycles/pixel at 250 MHz -> 6 (150 MHz -> 2)
+.define pixelhold 6
+.define PUBLIC vid_freq 250
+
+pull block 					; Pull pixel count from FIFO (only once)
+out isr, 32					; Stash count in ISR (unused otherwise) and empty OSR so autopull loads pixels
+.wrap_target
+
+set pins, 0 				; Zero RGB pins in blanking
+mov y, isr 					; Initialize counter variable
+
+wait 1 irq 1 [3]			; Wait for vsync active mode (starts 5 cycles after execution)
+
+colorout:
+	out x, 1				; Next pixel bit (autopull refills OSR every 32 pixels, no extra cycles)
+	jmp x-- invert			; Decrement: 1 -> 0, 0 -> all ones (always falls through to next line)
+invert:
+	mov pins, ~x [pixelhold]	; Drive all 4 pins: bit 1 -> 1111 (white), bit 0 -> 0000 (black)
+	jmp y-- colorout		; Stay here thru horizontal active mode
+
+.wrap
+
+% c-sdk {
+static inline void rgb1_program_init(PIO pio, uint sm, uint offset, uint pin) {
+
+    pio_sm_config c = rgb1_program_get_default_config(offset);
+
+    // SET and OUT pin groups both cover the 4 color pins
+    sm_config_set_set_pins(&c, pin, 4);
+    sm_config_set_out_pins(&c, pin, 4);
+
+    // shift right (pixel x lives in bit x&7 of byte x>>3), autopull every 32 bits
+    sm_config_set_out_shift(&c, true, true, 32);
+
+    // longer FIFO to avoid bursty data
+    sm_config_set_fifo_join (&c, PIO_FIFO_JOIN_TX) ;
+
+    pio_gpio_init(pio, pin);
+    pio_gpio_init(pio, pin+1);
+    pio_gpio_init(pio, pin+2);
+    pio_gpio_init(pio, pin+3);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 4, true);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

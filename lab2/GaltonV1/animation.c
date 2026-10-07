@@ -3,7 +3,7 @@
  * Camille Yap (cy474), Selena Wang (shw59)
  *
  * This demonstration animates a 16-row Galton board with balls bouncing through to form a histogram.
- * 
+ *
  *
  * HARDWARE CONNECTIONS
   - GPIO 16 ---> VGA Hsync
@@ -95,7 +95,7 @@ typedef signed int fix15;
 #define BALL_RADIUS int2fix15(3)
 #define PEG_RADIUS int2fix15(6)
 // #define BOUNCINESS float2fix15(0.3)
-#define MAX_NUM_BALLS 10000 // max number of balls that can be spawned
+#define MAX_NUM_BALLS 21871 // max number of balls that can be spawned
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
@@ -164,9 +164,9 @@ typedef struct
 Peg pegs[NUM_PEGS];
 
 // defines fixed peg offsets
-typedef struct 
-{ 
-  int8_t dx, dy; 
+typedef struct
+{
+  int8_t dx, dy;
 } Off;
 
 // Create a semaphore
@@ -183,7 +183,7 @@ uint64_t start_us;
 volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
-volatile int count = 7000;        // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+volatile int count = 21871;       // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
 volatile float bounciness = 0.3;  // stores the current bounciness value
 volatile fix15 bounce = 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
 volatile bool reset_hist = false; // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
@@ -298,13 +298,18 @@ void initPegShape(void)
   int x = 0, y = r, d = 1 - r;
   while (x <= y)
   {
-    int px[8] = { x,  y, -x, -y,  x,  y, -x, -y};
-    int py[8] = { y,  x,  y,  x, -y, -x, -y, -x};
+    int px[8] = {x, y, -x, -y, x, y, -x, -y};
+    int py[8] = {y, x, y, x, -y, -x, -y, -x};
     for (int i = 0; i < 8; i++)
       grid[r + py[i]][r + px[i]] = true;
 
-    if (d < 0) d += 2 * x + 3;
-    else { d += 2 * (x - y) + 5; y--; }
+    if (d < 0)
+      d += 2 * x + 3;
+    else
+    {
+      d += 2 * (x - y) + 5;
+      y--;
+    }
     x++;
   }
 
@@ -350,7 +355,7 @@ static inline void collide(Ball *ball, int peg_index)
     fix15 dist = min_max_sqrt_mag(abs_dx, abs_dy);
     if (dist < SEPARATION_DIST && dist > 0)
     {
-      fix15 inv = (1 << 30) / dist;     // plain 32-bit int divide, compiles to SDIV
+      fix15 inv = (1 << 30) / dist; // plain 32-bit int divide, compiles to SDIV
       fix15 normal_x = multfix15(dx, inv);
       fix15 normal_y = multfix15(dy, inv);
       // fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
@@ -476,7 +481,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
   static char time_str[64];
   static char bounce_str[64];
 
-  #define STATS_PERIOD 15  // recompute histogram and stats every 15 frames instead of every frame
+#define STATS_PERIOD 15 // recompute histogram and stats every 15 frames instead of every frame
   static int stats_tick = 0;
 
   // Draw histogram
@@ -502,7 +507,8 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     bool refresh = (stats_tick == 0);
     stats_tick = (stats_tick + 1) % STATS_PERIOD;
 
-    if (refresh) {
+    if (refresh)
+    {
       sprintf(fallen_str, "Total particles dropped: %d", total_fallen[0] + total_fallen[1]);
       sprintf(count_str, "Active particles: %d", count);
       sprintf(bounce_str, "Bounciness: %f", bounciness);
@@ -571,6 +577,16 @@ static PT_THREAD(protothread_anim(struct pt *pt))
         }
 
         drawRect(left + 1, HIST_BASE_Y - h, width - 2, h, WHITE);
+        char bin_str[64];
+        sprintf(bin_str, "%d", bin_sum[k]);
+        if (k % 2 == 0)
+        {
+          drawTextAscii(left + 1, BIN_LINE_Y + 20, bin_str, WHITE, BLACK);
+        }
+        else
+        {
+          drawTextAscii(left + 1, BIN_LINE_Y + 10, bin_str, WHITE, BLACK);
+        }
       }
     }
 
@@ -589,7 +605,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
 } // animation thread
 
 // Animation on core 1
-static PT_THREAD (protothread_anim1(struct pt *pt))
+static PT_THREAD(protothread_anim1(struct pt *pt))
 {
   // Mark beginning of thread
   PT_BEGIN(pt);
