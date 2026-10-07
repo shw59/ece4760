@@ -1,9 +1,9 @@
 
 /**
- * Hunter Adams (vha3@cornell.edu)
+ * Camille Yap (cy474), Selena Wang (shw59)
  *
- * This demonstration animates two balls bouncing about the screen.
- * Through a serial interface, the user can change the ball color.
+ * This demonstration animates a 16-row Galton board with balls bouncing through to form a histogram.
+ * 
  *
  * HARDWARE CONNECTIONS
   - GPIO 16 ---> VGA Hsync
@@ -95,7 +95,7 @@ typedef signed int fix15;
 #define BALL_RADIUS int2fix15(3)
 #define PEG_RADIUS int2fix15(6)
 // #define BOUNCINESS float2fix15(0.3)
-#define MAX_NUM_BALLS 8000 // max number of balls that can be spawned
+#define MAX_NUM_BALLS 10000 // max number of balls that can be spawned
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
@@ -123,36 +123,6 @@ typedef signed int fix15;
 int bins[2][NUM_BINS];              // histogram bins (summed when drawn)
 volatile int total_fallen[2] = {0}; // total balls fallen through the board
 
-// float Q_rsqrt(fix15 number)
-// {
-//   fix15 i;
-//   fix15 x2, y;
-//   const fix15 threehalfs = 1.5F;
-
-//   x2 = multfix15(number, 0.5F);
-//   y = number;
-//   i = *(fix15 *)&y;
-//   i = 0x5f3759df - (i >> 1);
-//   y = *(fix15 *)&i;
-//   y = multfix15(y, (threehalfs - multfix15(multfix15(x2, y), y)));
-
-//   return y;
-// }
-// float Q_rsqrt(float number)
-// {
-//   long i;
-//   float x2, y;
-//   const float threehalfs = 1.5F;
-
-//   x2 = number * 0.5F;
-//   y = number;
-//   i = *(long *)&y;
-//   i = 0x5f3759df - (i >> 1);
-//   y = *(float *)&i;
-//   y = y * (threehalfs - (x2 * y * y));
-
-//   return y;
-// }
 static inline float Q_rsqrt(float x)
 {
   float xhalf = 0.5f * x;
@@ -162,6 +132,13 @@ static inline float Q_rsqrt(float x)
   memcpy(&x, &i, sizeof x);
   x = x * (1.5f - xhalf * x * x); // one Newton step
   return x;
+}
+
+// compute alpha min beta max sqrt magnitude approximatino with alpha = 1 and beta = 1/4 for lowest avg error
+// assume absolute value pararmeters are being passed into this function
+static inline float min_max_sqrt_mag(fix15 x, fix15 y)
+{
+  return MAX(x, y) + (MIN(x, y) >> 2);
 }
 
 // the color of the Ball
@@ -186,6 +163,12 @@ typedef struct
 
 Peg pegs[NUM_PEGS];
 
+// defines fixed peg offsets
+typedef struct 
+{ 
+  int8_t dx, dy; 
+} Off;
+
 // Create a semaphore
 semaphore_t enc_semaphore;
 semaphore_t phys_sem; // core 0 -> core 1: frame cleared, go
@@ -200,7 +183,7 @@ uint64_t start_us;
 volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
-volatile int count = 5000;        // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+volatile int count = 7000;        // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
 volatile float bounciness = 0.3;  // stores the current bounciness value
 volatile fix15 bounce = 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
 volatile bool reset_hist = false; // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
@@ -302,6 +285,55 @@ void initPegs()
     }
   }
 }
+
+// AI generated code to initialize fixed pegs
+static Off peg_off[64];
+static int peg_n = 0;
+
+void initPegShape(void)
+{
+  const int r = PEG_RADIUS_INT;
+  bool grid[2 * PEG_RADIUS_INT + 1][2 * PEG_RADIUS_INT + 1] = {{false}};
+
+  int x = 0, y = r, d = 1 - r;
+  while (x <= y)
+  {
+    int px[8] = { x,  y, -x, -y,  x,  y, -x, -y};
+    int py[8] = { y,  x,  y,  x, -y, -x, -y, -x};
+    for (int i = 0; i < 8; i++)
+      grid[r + py[i]][r + px[i]] = true;
+
+    if (d < 0) d += 2 * x + 3;
+    else { d += 2 * (x - y) + 5; y--; }
+    x++;
+  }
+
+  for (int j = 0; j < 2 * r + 1; j++)
+    for (int i = 0; i < 2 * r + 1; i++)
+      if (grid[j][i])
+      {
+        peg_off[peg_n].dx = i - r;
+        peg_off[peg_n].dy = j - r;
+        peg_n++;
+      }
+}
+
+// draw peg using pre-determined peg shapes
+static inline void drawPeg(int x, int y, char c)
+{
+  for (int i = 0; i < peg_n; i++)
+    drawPixel(x + peg_off[i].dx, y + peg_off[i].dy, c);
+}
+
+// draw ball as 2x2 pixel
+static inline void drawBall(int x, int y, char c)
+{
+  drawPixel(x, y, c);
+  drawPixel(x + 1, y, c);
+  drawPixel(x, y + 1, c);
+  drawPixel(x + 1, y + 1, c);
+}
+
 #define SEP_SQ_FIX multfix15(SEPARATION_DIST, SEPARATION_DIST)
 static inline void collide(Ball *ball, int peg_index)
 {
@@ -310,12 +342,15 @@ static inline void collide(Ball *ball, int peg_index)
   fix15 dx = ball->x - peg->x;
   fix15 dy = ball->y - peg->y;
 
-  if (abs(dx) < (SEPARATION_DIST) && (abs(dy) < (SEPARATION_DIST)))
+  fix15 abs_dx = abs(dx);
+  fix15 abs_dy = abs(dy);
+
+  if (abs_dx < (SEPARATION_DIST) && (abs_dy < (SEPARATION_DIST)))
   {
-    fix15 d2 = multfix15(dx, dx) + multfix15(dy, dy);
-    if (d2 < SEP_SQ_FIX && d2 > 0) // no sqrt needed for the hit test
+    fix15 dist = min_max_sqrt_mag(abs_dx, abs_dy);
+    if (dist < SEPARATION_DIST && dist > 0)
     {
-      fix15 inv = float2fix15(Q_rsqrt(fix2float15(d2))); // 1/dist
+      fix15 inv = (1 << 30) / dist;     // plain 32-bit int divide, compiles to SDIV
       fix15 normal_x = multfix15(dx, inv);
       fix15 normal_y = multfix15(dy, inv);
       // fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
@@ -441,6 +476,13 @@ static PT_THREAD(protothread_anim(struct pt *pt))
   static char time_str[64];
   static char bounce_str[64];
 
+  #define STATS_PERIOD 15  // recompute histogram and stats every 15 frames instead of every frame
+  static int stats_tick = 0;
+
+  // Draw histogram
+  static int bin_sum[NUM_BINS];
+  static int max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
+
   while (1)
   {
     // Wait for the signal that the buffer's changed
@@ -457,6 +499,27 @@ static PT_THREAD(protothread_anim(struct pt *pt))
       total_fallen[1] = 0;
     }
 
+    bool refresh = (stats_tick == 0);
+    stats_tick = (stats_tick + 1) % STATS_PERIOD;
+
+    if (refresh) {
+      sprintf(fallen_str, "Total particles dropped: %d", total_fallen[0] + total_fallen[1]);
+      sprintf(count_str, "Active particles: %d", count);
+      sprintf(bounce_str, "Bounciness: %f", bounciness);
+      uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
+      sprintf(time_str, "Time elapsed: %d", elapsed_time);
+
+      // Calculate histogram
+      max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
+      // combine both cores' bins and find the tallest one
+      for (int k = 0; k < NUM_BINS; k++)
+      {
+        bin_sum[k] = bins[0][k] + bins[1][k];
+        if (bin_sum[k] > max_bin)
+          max_bin = bin_sum[k];
+      }
+    }
+
     // Clear the buffer, then let core 1 start on its half of the balls
     clearLowFrame(0, BLACK);
     int n = count;
@@ -467,36 +530,20 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     for (int i = 0; i < n / 2; i++)
     {
       updateBall(&balls[i], 0);
-      drawCircle(fix2int15(balls[i].x), fix2int15(balls[i].y), BALL_RADIUS_INT, color);
+      drawBall(fix2int15(balls[i].x), fix2int15(balls[i].y), color);
     }
 
     // Draw count of fallen balls
-    sprintf(fallen_str, "Total particles dropped: %d", total_fallen[0] + total_fallen[1]);
     drawTextAscii(10, 10, fallen_str, WHITE, BLACK);
 
     // Draw count of balls
-    sprintf(count_str, "Active particles: %d", count);
     drawTextAscii(10, 22, count_str, WHITE, BLACK);
 
     // Draw bounciness
-    sprintf(bounce_str, "Bounciness: %f", bounciness);
     drawTextAscii(10, 34, bounce_str, WHITE, BLACK);
 
     // Draw time
-    uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
-    sprintf(time_str, "Time elapsed: %d", elapsed_time);
     drawTextAscii(10, 46, time_str, WHITE, BLACK);
-
-    // Draw histogram
-    int bin_sum[NUM_BINS];
-    int max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
-    // combine both cores' bins and find the tallest one
-    for (int k = 0; k < NUM_BINS; k++)
-    {
-      bin_sum[k] = bins[0][k] + bins[1][k];
-      if (bin_sum[k] > max_bin)
-        max_bin = bin_sum[k];
-    }
 
     // normalize everything else to the tallest bin and draw
     for (int k = 0; k < NUM_BINS; k++)
@@ -523,14 +570,14 @@ static PT_THREAD(protothread_anim(struct pt *pt))
           width = BIN_WIDTH;
         }
 
-        // fillRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
-        drawRect(left + 1, HIST_BASE_Y - h, width - 2, h, GREEN);
+        drawRect(left + 1, HIST_BASE_Y - h, width - 2, h, WHITE);
       }
     }
 
+    // draw pegs
     for (int i = 0; i < NUM_PEGS; i++)
     {
-      drawCircle(fix2int15(pegs[i].x), fix2int15(pegs[i].y), PEG_RADIUS_INT, BLUE);
+      drawPeg(fix2int15(pegs[i].x), fix2int15(pegs[i].y), WHITE);
     }
 
     // don't start the next frame (and its clear) until core 1 is done drawing
@@ -555,7 +602,7 @@ static PT_THREAD (protothread_anim1(struct pt *pt))
     for (int i = n / 2; i < n; i++)
     {
       updateBall(&balls[i], 1);
-      drawCircle(fix2int15(balls[i].x), fix2int15(balls[i].y), BALL_RADIUS_INT, color);
+      drawBall(fix2int15(balls[i].x), fix2int15(balls[i].y), color);
     }
 
     sem_release(&done_sem);
@@ -684,6 +731,7 @@ int main()
   init_audio();
   initBalls();
   initPegs();
+  initPegShape();
 
   // Initialize the semaphore
   // Arguments: pointer to sem, initial count, max count

@@ -120,6 +120,15 @@ int buffer_type ;
 #define TOPMASK 0b00001111
 #define BOTTOMMASK 0b11110000
 
+// #define PIXEL0 0b00000001
+// #define PIXEL1 0b00000010
+// #define PIXEL2 0b00000100
+// #define PIXEL3 0b00001000
+// #define PIXEL4 0b00010000
+// #define PIXEL5 0b00100000
+// #define PIXEL6 0b01000000
+// #define PIXEL7 0b10000000
+
 // For drawLine
 #define swap(a, b) { short t = a; a = b; b = t; }
 
@@ -372,6 +381,54 @@ void drawPixel(short x, short y, char color) {
         *(draw_loc) = (*(draw_loc) & BOTTOMMASK) | (color) ;
     }
 }
+
+// void drawPixel(short x, short y, char color) {
+//     // Range checks (640x480 display)
+//     if((x > 639) | (x < 0) | (y > 479) | (y < 0) ) return;
+
+//     // Which pixel is it?
+//     // shift by one to get the byte (8 pixels/byte)
+//     //int pixel = (640 * y + x) >> 3;
+//     char * draw_loc = (current_draw_buffer + ((640 * y + x) >> 3)) ;
+//     // Is this pixel stored in the first 4 bits
+//     // of the vga data array index, or the second
+//     // 4 bits? Check, then mask.
+//     // draws to the current_draw_buffer
+//     int bit = x & 7;
+
+//     if (bit == 0) {
+//         if (color) *draw_loc |= PIXEL0;
+//         else       *draw_loc &= ~PIXEL0;
+//     }
+//     else if (bit == 1) {
+//         if (color) *draw_loc |= PIXEL1;
+//         else       *draw_loc &= ~PIXEL1;
+//     }
+//     else if (bit == 2) {
+//         if (color) *draw_loc |= PIXEL2;
+//         else       *draw_loc &= ~PIXEL2;
+//     }
+//     else if (bit == 3) {
+//         if (color) *draw_loc |= PIXEL3;
+//         else       *draw_loc &= ~PIXEL3;
+//     }
+//     else if (bit == 4) {
+//         if (color) *draw_loc |= PIXEL4;
+//         else       *draw_loc &= ~PIXEL4;
+//     }
+//     else if (bit == 5) {
+//         if (color) *draw_loc |= PIXEL5;
+//         else       *draw_loc &= ~PIXEL5;
+//     }
+//     else if (bit == 6) {
+//         if (color) *draw_loc |= PIXEL6;
+//         else       *draw_loc &= ~PIXEL6;
+//     }
+//     else {                       // bit == 7
+//         if (color) *draw_loc |= PIXEL7;
+//         else       *draw_loc &= ~PIXEL7;
+//     }
+// }
 
 // Check status of neighbors
 int checkNeighbors(short x, short y) {
