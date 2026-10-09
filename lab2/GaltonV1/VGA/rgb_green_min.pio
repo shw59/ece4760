@@ -1,0 +1,65 @@
+;
+; Hunter Adams (vha3@cornell.edu)
+; RGB generation for VGA driver
+; mod by Bruce Land for 16 colors
+; mod for 1 bit/pixel green only: one bit per pixel to the green hi-bit pin,
+; autopull every 8 bits (one byte from the 8-bit DMA)
+
+; Program name
+.program rgb
+; define the pixel hold time which depends on clock freq
+; (2 + pixelhold) cycles per pixel: 8 for 250 MHz, 4 for 150 MHz
+.define pixelhold 10
+.define PUBLIC vid_freq 150
+
+pull block 					; Pull from FIFO to OSR (only once)
+out y, 32 					; Copy value from OSR to y scratch register (and empty OSR for autopull)
+.wrap_target
+
+set pins, 0 				; Zero RGB pins in blanking
+mov x, y 					; Initialize counter variable
+
+wait 1 irq 1 [3]			; Wait for vsync active mode (starts 5 cycles after execution)
+
+colorout:
+	out pins, 1	[pixelhold]	; Push out to pin (one pixel), autopull refills every 8 pixels
+	jmp x-- colorout		; Stay here thru horizontal active mode
+
+.wrap
+
+% c-sdk {
+static inline void rgb_program_init(PIO pio, uint sm, uint offset, uint pin) {
+
+    // creates state machine configuration object c, sets
+    // to default configurations. I believe this function is auto-generated
+    // and gets a name of <program name>_program_get_default_config
+    // Yes, page 40 of SDK guide
+    pio_sm_config c = rgb_program_get_default_config(offset);
+
+    // Map the state machine's SET and OUT pin group to three pins, the `pin`
+    // parameter to this function is the lowest one. These groups overlap.
+    sm_config_set_set_pins(&c, pin, 1);
+    sm_config_set_out_pins(&c, pin, 1);
+
+    // shift right (LSB = leftmost pixel), autopull every 8 bits
+    sm_config_set_out_shift(&c, true, true, 8);
+
+    // Set clock division (Commented out, this one runs at full speed)
+    // sm_config_set_clkdiv(&c, 5) ;
+
+    // longer FIFO to avoid bursty data
+    sm_config_set_fifo_join (&c, PIO_FIFO_JOIN_TX) ;
+
+    // Set this pin's GPIO function (connect PIO to the pad)
+    pio_gpio_init(pio, pin);
+    
+    // Set the pin direction to output at the PIO (1 pin)
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+
+    // Set the state machine running (commented out, I'll start this in the C)
+    // pio_sm_set_enabled(pio, sm, true);
+}
+%}

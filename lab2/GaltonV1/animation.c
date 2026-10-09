@@ -39,6 +39,7 @@
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include "hardware/spi.h"
+#include "hardware/vreg.h"
 
 // Number of samples per period in sine table
 #define sine_table_size 256
@@ -73,15 +74,28 @@ const uint32_t transfer_count = sine_table_size;
 #include "pt_cornell_rp2040_v1_4.h"
 
 // === the fixed point macros ========================================
-typedef signed int fix15;
-#define multfix15(a, b) ((fix15)((((signed long long)(a)) * ((signed long long)(b))) >> 15))
-#define float2fix15(a) ((fix15)((a) * 32768.0f)) // 2^15
-#define fix2float15(a) ((float)(a) / 32768.0f)
-#define absfix15(a) abs(a)
-#define int2fix15(a) ((fix15)(a << 15))
-#define fix2int15(a) ((int)(a >> 15))
-#define char2fix15(a) (fix15)(((fix15)(a)) << 15)
-#define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
+// typedef signed int fix15;
+typedef int16_t fix15;
+// #define multfix15(a, b) ((fix15)((((signed long long)(a)) * ((signed long long)(b))) >> 15))
+// #define float2fix15(a) ((fix15)((a) * 32768.0f)) // 2^15
+// #define fix2float15(a) ((float)(a) / 32768.0f)
+// #define absfix15(a) abs(a)
+// #define int2fix15(a) ((fix15)(a << 15))
+// #define fix2int15(a) ((int)(a >> 15))
+// #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
+// #define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
+typedef int16_t fix15; // actually Q10.5 now
+#define FIX_FRAC 5
+#define multfix15(a, b) ((fix15)(((int32_t)(a) * (int32_t)(b)) >> FIX_FRAC))
+// #define float2fix15(a) ((fix15)((a) * (float)(1 << FIX_FRAC)))
+#define float2fix15(a) ((fix15)((a) * (float)(1 << FIX_FRAC) + ((a) >= 0 ? 0.5f : -0.5f)))
+
+#define fix2float15(a) ((float)(a) / (float)(1 << FIX_FRAC))
+#define int2fix15(a) ((fix15)((a) << FIX_FRAC))
+#define fix2int15(a) ((int)((a) >> FIX_FRAC))
+#define divfix(a, b) ((fix15)(div_s32s32(((int32_t)(a)) << FIX_FRAC, (int32_t)(b))))
+
+#define GRAVITY float2fix15(0.37f)
 
 // Wall detection
 #define hitBottom(b) (b > int2fix15(480))
@@ -91,11 +105,11 @@ typedef signed int fix15;
 #define sqrtfix(a) (float2fix15(sqrtf(fix2float15(a))))
 // uS per frame
 #define FRAME_RATE 33000
-#define GRAVITY 12124 // float2fix15(0.37) = 0.37 * 32768
+// #define GRAVITY 12124 // float2fix15(0.37) = 0.37 * 32768
 #define BALL_RADIUS int2fix15(3)
 #define PEG_RADIUS int2fix15(6)
 // #define BOUNCINESS float2fix15(0.3)
-#define MAX_NUM_BALLS 21871 // max number of balls that can be spawned
+#define MAX_NUM_BALLS 30000 // max number of balls that can be spawned
 #define HORIZONTAL_SEP int2fix15(38)
 #define VERTICAL_SEP int2fix15(19)
 #define NUM_LEVELS 16
@@ -123,17 +137,6 @@ typedef signed int fix15;
 int bins[2][NUM_BINS];              // histogram bins (summed when drawn)
 volatile int total_fallen[2] = {0}; // total balls fallen through the board
 
-static inline float Q_rsqrt(float x)
-{
-  float xhalf = 0.5f * x;
-  int32_t i;
-  memcpy(&i, &x, sizeof i); // safe type-pun, same cost as the cast
-  i = 0x5f3759df - (i >> 1);
-  memcpy(&x, &i, sizeof x);
-  x = x * (1.5f - xhalf * x * x); // one Newton step
-  return x;
-}
-
 // compute alpha min beta max sqrt magnitude approximatino with alpha = 1 and beta = 1/4 for lowest avg error
 // assume absolute value pararmeters are being passed into this function
 static inline float min_max_sqrt_mag(fix15 x, fix15 y)
@@ -142,7 +145,7 @@ static inline float min_max_sqrt_mag(fix15 x, fix15 y)
 }
 
 // the color of the Ball
-char color = WHITE;
+char color = GREEN;
 
 typedef struct
 {
@@ -183,10 +186,10 @@ uint64_t start_us;
 volatile int mode = 0; // 0 for ball count, 1 for bounciness
 
 volatile bool b_value;
-volatile int count = 21871;       // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
-volatile float bounciness = 0.3;  // stores the current bounciness value
-volatile fix15 bounce = 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
-volatile bool reset_hist = false; // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
+volatile int count = 27000;               // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
+volatile float bounciness = 0.3;          // stores the current bounciness value
+volatile fix15 bounce = float2fix15(0.3); // 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
+volatile bool reset_hist = false;         // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
 
 // GPIO ISR on encoder pin As
 void gpio_callback(uint gpio, uint32_t events)
@@ -355,7 +358,8 @@ static inline void collide(Ball *ball, int peg_index)
     fix15 dist = min_max_sqrt_mag(abs_dx, abs_dy);
     if (dist < SEPARATION_DIST && dist > 0)
     {
-      fix15 inv = (1 << 30) / dist; // plain 32-bit int divide, compiles to SDIV
+      // fix15 inv = (1 << 30) / dist; // plain 32-bit int divide, compiles to SDIV
+      fix15 inv = (1 << 10) / dist;
       fix15 normal_x = multfix15(dx, inv);
       fix15 normal_y = multfix15(dy, inv);
       // fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
@@ -369,8 +373,8 @@ static inline void collide(Ball *ball, int peg_index)
 
       fix15 dot = multfix15(normal_x, ball->vx) + multfix15(normal_y, ball->vy);
       // fix15 intermediate_term = multfix15(float2fix15(-2), dot);
-      fix15 intermediate_term = multfix15((-65536), dot); // float2fix15(-2) = -2 * 32768
-
+      // fix15 intermediate_term = multfix15((-65536), dot); // float2fix15(-2) = -2 * 32768
+      fix15 intermediate_term = multfix15(float2fix15(-2), dot); // float2fix15(-2) = -2 * 32768
       ball->x = peg->x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
       ball->y = peg->y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
       ball->vx = ball->vx + (multfix15(normal_x, intermediate_term));
@@ -540,16 +544,16 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     }
 
     // Draw count of fallen balls
-    drawTextAscii(10, 10, fallen_str, WHITE, BLACK);
+    drawTextAscii(10, 10, fallen_str, GREEN, BLACK);
 
     // Draw count of balls
-    drawTextAscii(10, 22, count_str, WHITE, BLACK);
+    drawTextAscii(10, 22, count_str, GREEN, BLACK);
 
     // Draw bounciness
-    drawTextAscii(10, 34, bounce_str, WHITE, BLACK);
+    drawTextAscii(10, 34, bounce_str, GREEN, BLACK);
 
     // Draw time
-    drawTextAscii(10, 46, time_str, WHITE, BLACK);
+    drawTextAscii(10, 46, time_str, GREEN, BLACK);
 
     // normalize everything else to the tallest bin and draw
     for (int k = 0; k < NUM_BINS; k++)
@@ -688,7 +692,8 @@ void init_audio()
   // (X/Y)*sys_clk, where X is the first 16 bytes and Y is the second
   // sys_clk is 125 MHz unless changed in code. Configured to ~44 kHz
   // dma_timer_set_fraction(0, 0x0017, 0xffff);
-  dma_timer_set_fraction(0, 0x0012, 0xffff); // sys_clk is 250 MHz now so just adjusted back something close to 44 KHz
+  // dma_timer_set_fraction(0, 0x0012, 0xffff); // sys_clk is 250 MHz now so just adjusted back something close to 44 KHz
+  dma_timer_set_fraction(0, 11, 7500);
   // 0x3b means timer0 (see SDK manual)
   channel_config_set_dreq(&c2, 0x3b); // DREQ paced by timer 0
   // chain to the controller DMA channel
@@ -714,7 +719,10 @@ void init_audio()
 int main()
 {
   // set_sys_clock_khz(150000, true);
-  set_sys_clock_khz(250000, true); // 250MHz internal clock - 10 cycles per pixel
+  vreg_set_voltage(VREG_VOLTAGE_1_20);
+  sleep_ms(10);
+  // vreg_disable_voltage_limit();
+  set_sys_clock_khz(300000, true); // 250MHz internal clock - 10 cycles per pixel
 
   // initialize stdio
   stdio_init_all();
