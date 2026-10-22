@@ -73,7 +73,6 @@ const uint32_t transfer_count = sine_table_size;
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 // === the fixed point macros ========================================
-// typedef signed int fix15;
 typedef int16_t fix15;
 #define FIXED_FRAC 5
 #define multfix15(a, b) ((fix15)(((int32_t)(a) * (int32_t)(b)) >> FIXED_FRAC))
@@ -577,7 +576,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
         drawRect(left + 1, HIST_BASE_Y - h, width - 2, h, WHITE);
         char bin_str[64];
         sprintf(bin_str, "%d", bin_sum[k]);
-        if (k % 2 == 0)
+        if (k % 2 == 0) // text placed higher on even histograms to prevent overlapping text
         {
           drawTextAscii(left + 1, BIN_LINE_Y + 20, bin_str, WHITE, BLACK);
         }
