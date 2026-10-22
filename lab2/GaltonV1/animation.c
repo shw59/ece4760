@@ -72,28 +72,17 @@ unsigned short *address_pointer = &DAC_data[0];
 const uint32_t transfer_count = sine_table_size;
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
-
 // === the fixed point macros ========================================
 // typedef signed int fix15;
 typedef int16_t fix15;
-// #define multfix15(a, b) ((fix15)((((signed long long)(a)) * ((signed long long)(b))) >> 15))
-// #define float2fix15(a) ((fix15)((a) * 32768.0f)) // 2^15
-// #define fix2float15(a) ((float)(a) / 32768.0f)
-// #define absfix15(a) abs(a)
-// #define int2fix15(a) ((fix15)(a << 15))
-// #define fix2int15(a) ((int)(a >> 15))
-// #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
-// #define divfix(a, b) (fix15)(div_s64s64((((signed long long)(a)) << 15), ((signed long long)(b))))
-typedef int16_t fix15; // actually Q10.5 now
-#define FIX_FRAC 5
-#define multfix15(a, b) ((fix15)(((int32_t)(a) * (int32_t)(b)) >> FIX_FRAC))
-// #define float2fix15(a) ((fix15)((a) * (float)(1 << FIX_FRAC)))
-#define float2fix15(a) ((fix15)((a) * (float)(1 << FIX_FRAC) + ((a) >= 0 ? 0.5f : -0.5f)))
+#define FIXED_FRAC 5
+#define multfix15(a, b) ((fix15)(((int32_t)(a) * (int32_t)(b)) >> FIXED_FRAC))
+#define float2fix15(a) ((fix15)((a) * (float)(1 << FIXED_FRAC) + ((a) >= 0 ? 0.5f : -0.5f)))
 
-#define fix2float15(a) ((float)(a) / (float)(1 << FIX_FRAC))
-#define int2fix15(a) ((fix15)((a) << FIX_FRAC))
-#define fix2int15(a) ((int)((a) >> FIX_FRAC))
-#define divfix(a, b) ((fix15)(div_s32s32(((int32_t)(a)) << FIX_FRAC, (int32_t)(b))))
+#define fix2float15(a) ((float)(a) / (float)(1 << FIXED_FRAC))
+#define int2fix15(a) ((fix15)((a) << FIXED_FRAC))
+#define fix2int15(a) ((int)((a) >> FIXED_FRAC))
+#define divfix(a, b) ((fix15)(div_s32s32(((int32_t)(a)) << FIXED_FRAC, (int32_t)(b))))
 
 #define GRAVITY float2fix15(0.37f)
 
@@ -105,18 +94,17 @@ typedef int16_t fix15; // actually Q10.5 now
 #define sqrtfix(a) (float2fix15(sqrtf(fix2float15(a))))
 // uS per frame
 #define FRAME_RATE 33000
-// #define GRAVITY 12124 // float2fix15(0.37) = 0.37 * 32768
 #define BALL_RADIUS int2fix15(3)
 #define PEG_RADIUS int2fix15(6)
 // #define BOUNCINESS float2fix15(0.3)
-#define MAX_NUM_BALLS 30000 // max number of balls that can be spawned
-#define HORIZONTAL_SEP int2fix15(38)
-#define VERTICAL_SEP int2fix15(19)
-#define NUM_LEVELS 16
+#define MAX_NUM_BALLS 30000          // max number of balls that can be spawned
+#define HORIZONTAL_SEP int2fix15(38) // horizontal separation between pegs
+#define VERTICAL_SEP int2fix15(19)   // vertical separation between pegs
+#define NUM_LEVELS 16                // number of rows in galton board
 #define NUM_PEGS (NUM_LEVELS * (NUM_LEVELS + 1) / 2)
-#define SPAWN_X int2fix15(320)
-#define SPAWN_Y int2fix15(0)
-#define VY_INITIAL int2fix15(0)
+#define SPAWN_X int2fix15(320)  // x coord for spawn
+#define SPAWN_Y int2fix15(0)    // y coord for spawn
+#define VY_INITIAL int2fix15(0) // initial y velocity for each ball
 #define BALL_RADIUS_INT 3
 #define PEG_RADIUS_INT 6
 #define SEPARATION_DIST (BALL_RADIUS + PEG_RADIUS)
@@ -137,7 +125,7 @@ typedef int16_t fix15; // actually Q10.5 now
 int bins[2][NUM_BINS];              // histogram bins (summed when drawn)
 volatile int total_fallen[2] = {0}; // total balls fallen through the board
 
-// compute alpha min beta max sqrt magnitude approximatino with alpha = 1 and beta = 1/4 for lowest avg error
+// compute alpha min beta max sqrt magnitude approximation with alpha = 1 and beta = 1/4 for lowest avg error
 // assume absolute value pararmeters are being passed into this function
 static inline float min_max_sqrt_mag(fix15 x, fix15 y)
 {
@@ -147,6 +135,7 @@ static inline float min_max_sqrt_mag(fix15 x, fix15 y)
 // the color of the Ball
 char color = GREEN;
 
+// struct for each ball
 typedef struct
 {
   fix15 x;
@@ -156,21 +145,24 @@ typedef struct
   int16_t prev_peg; // -1 = no peg yet
 } Ball;
 
-Ball balls[MAX_NUM_BALLS];
+Ball balls[MAX_NUM_BALLS]; // list of the max number of balls that could be spawned
 
+// struct for each peg
 typedef struct
 {
   fix15 x;
   fix15 y;
 } Peg;
 
-Peg pegs[NUM_PEGS];
+Peg pegs[NUM_PEGS]; // list of pegs in the simulation
 
+// ################## BEGIN AI-GENERATED CODE ##################
 // defines fixed peg offsets
 typedef struct
 {
   int8_t dx, dy;
 } Off;
+// ################### END AI-GENERATED CODE ###################
 
 // Create a semaphore
 semaphore_t enc_semaphore;
@@ -183,12 +175,12 @@ int ctrl_chan;
 // time elapsed
 uint64_t start_us;
 
-volatile int mode = 0; // 0 for ball count, 1 for bounciness
+volatile int mode = 0; // 0 for modifying ball count, 1 for bounciness
 
-volatile bool b_value;
+volatile bool b_value;                    // marks whether encoder pin B is active (clockwise turn)
 volatile int count = 27000;               // counter for measuring orientation - +1 for clockwise, -1 for counter-clockwise
 volatile float bounciness = 0.3;          // stores the current bounciness value
-volatile fix15 bounce = float2fix15(0.3); // 9830;     // float2fix15(0.3) = 0.3 * 32768 ; // could make a new global temp var for fix15
+volatile fix15 bounce = float2fix15(0.3); // fix15 of the bounce variable
 volatile bool reset_hist = false;         // set by the encoder ISR, cleared by core 0 once it zeroes the histogram
 
 // GPIO ISR on encoder pin As
@@ -199,8 +191,8 @@ void gpio_callback(uint gpio, uint32_t events)
   if (gpio == ENCODER_A)
   {
     reset_hist = true; // any parameter change resets the histogram + fallen count
-    if (b_value)
-    { // clockwise
+    if (b_value)       // encoder pin B active
+    {                  // clockwise
       if (mode == 1)
       {
         if (bounciness < 1)
@@ -211,15 +203,15 @@ void gpio_callback(uint gpio, uint32_t events)
       }
       else
       {
-        if (count < MAX_NUM_BALLS)
+        if (count < MAX_NUM_BALLS) // increment if under max number of balls
         {
           count += 1;
         }
       }
     }
     else
-    { // counter-clockwise
-      if (mode == 1)
+    {                // counter-clockwise
+      if (mode == 1) // modifying bounciness
       {
         if (bounciness > 0.0)
         {
@@ -227,16 +219,16 @@ void gpio_callback(uint gpio, uint32_t events)
           bounce = float2fix15(bounciness);
         }
       }
-      else
+      else // modifying ball spawn count
       {
-        if (count > 0)
+        if (count > 0) // only nonnegative number of balls
         {
           count -= 1;
         }
       }
     }
   }
-  else if (gpio == SW)
+  else if (gpio == SW) // switch modes when button is pressed
   {
     mode = !mode;
   }
@@ -254,11 +246,13 @@ void spawnBall(Ball *ball)
   ball->vy = VY_INITIAL;
 }
 
+// sound for ball hitting peg
 void trigger_sound()
 {
   dma_start_channel_mask(1u << ctrl_chan);
 }
 
+// initialize all the balls
 void initBalls()
 {
   for (int i = 0; i < MAX_NUM_BALLS; i++)
@@ -269,6 +263,7 @@ void initBalls()
   }
 }
 
+// initialize all the pegs
 void initPegs()
 {
   int peg_index = 0;
@@ -283,44 +278,58 @@ void initPegs()
 
       pegs[peg_index].x = int2fix15(x);
       pegs[peg_index].y = int2fix15(y);
-      // pegs[peg_index].rad = PEG_RADIUS; // remove for memory
       peg_index++;
     }
   }
 }
 
-// AI generated code to initialize fixed pegs
-static Off peg_off[64];
-static int peg_n = 0;
+// ################## BEGIN AI-GENERATED CODE ##################
+// List of (dx, dy) offsets from a peg's center that make up its outline.
+// Built once at startup, so drawing a peg is just "center + each offset".
+static Off peg_off[64]; // Off is {dx, dy}; a radius-6 ring needs ~36 entries, 64 is plenty
+static int peg_n = 0;   // how many offsets were stored
 
 void initPegShape(void)
 {
   const int r = PEG_RADIUS_INT;
+
+  // Temporary (2r+1) x (2r+1) bitmap, centered on (r, r). A cell is true if it
+  // is on the circle outline. Using a grid removes duplicate points, because the
+  // 8-way symmetry plots some pixels twice (at x == 0 and x == y).
   bool grid[2 * PEG_RADIUS_INT + 1][2 * PEG_RADIUS_INT + 1] = {{false}};
 
-  int x = 0, y = r, d = 1 - r;
-  while (x <= y)
+  // Midpoint circle (Bresenham) algorithm. It only walks one octant, from the
+  // top of the circle (x = 0, y = r) toward the 45-degree point (x = y).
+  int x = 0, y = r;
+  int d = 1 - r; // decision variable: tells us if the next pixel is at y or y - 1
+
+  while (x <= y) // stop at 45 degrees; the other octants come from symmetry
   {
+    // One point (x, y) in one octant gives 8 points on the whole circle
+    // by swapping x/y and flipping signs.
     int px[8] = {x, y, -x, -y, x, y, -x, -y};
     int py[8] = {y, x, y, x, -y, -x, -y, -x};
     for (int i = 0; i < 8; i++)
-      grid[r + py[i]][r + px[i]] = true;
+      grid[r + py[i]][r + px[i]] = true; // + r shifts from center-origin to array index
 
+    // Update the decision variable and choose the next pixel.
     if (d < 0)
-      d += 2 * x + 3;
+      d += 2 * x + 3; // midpoint is inside the circle: keep y, step x
     else
     {
-      d += 2 * (x - y) + 5;
+      d += 2 * (x - y) + 5; // midpoint is outside: step x and move y down one
       y--;
     }
-    x++;
+    x++; // always advance x one pixel per iteration
   }
 
-  for (int j = 0; j < 2 * r + 1; j++)
-    for (int i = 0; i < 2 * r + 1; i++)
+  // Flatten the bitmap into a list of offsets. Drawing a peg later is then just
+  // a loop over this short list instead of rerunning the circle algorithm.
+  for (int j = 0; j < 2 * r + 1; j++)   // j = row (y)
+    for (int i = 0; i < 2 * r + 1; i++) // i = column (x)
       if (grid[j][i])
       {
-        peg_off[peg_n].dx = i - r;
+        peg_off[peg_n].dx = i - r; // convert back to an offset from the center
         peg_off[peg_n].dy = j - r;
         peg_n++;
       }
@@ -332,6 +341,7 @@ static inline void drawPeg(int x, int y, char c)
   for (int i = 0; i < peg_n; i++)
     drawPixel(x + peg_off[i].dx, y + peg_off[i].dy, c);
 }
+// ################### END AI-GENERATED CODE ###################
 
 // draw ball as 2x2 pixel
 static inline void drawBall(int x, int y, char c)
@@ -342,39 +352,28 @@ static inline void drawBall(int x, int y, char c)
   drawPixel(x + 1, y + 1, c);
 }
 
-#define SEP_SQ_FIX multfix15(SEPARATION_DIST, SEPARATION_DIST)
+// checks ball collisions
 static inline void collide(Ball *ball, int peg_index)
 {
   Peg *peg = &pegs[peg_index];
 
-  fix15 dx = ball->x - peg->x;
-  fix15 dy = ball->y - peg->y;
+  fix15 dx = ball->x - peg->x; // change in x
+  fix15 dy = ball->y - peg->y; // change in y
 
-  fix15 abs_dx = abs(dx);
-  fix15 abs_dy = abs(dy);
-
-  if (abs_dx < (SEPARATION_DIST) && (abs_dy < (SEPARATION_DIST)))
+  fix15 abs_dx = abs(dx); // absolute change in x
+  fix15 abs_dy = abs(dy); // absolute change in y
+  // collision algorithm
+  if (abs_dx < (SEPARATION_DIST) && (abs_dy < (SEPARATION_DIST))) // check if within separation distance for collision
   {
-    fix15 dist = min_max_sqrt_mag(abs_dx, abs_dy);
+    fix15 dist = min_max_sqrt_mag(abs_dx, abs_dy); // use min max sqrt algorithm
     if (dist < SEPARATION_DIST && dist > 0)
     {
-      // fix15 inv = (1 << 30) / dist; // plain 32-bit int divide, compiles to SDIV
       fix15 inv = (1 << 10) / dist;
-      fix15 normal_x = multfix15(dx, inv);
+      fix15 normal_x = multfix15(dx, inv); // normalize positions
       fix15 normal_y = multfix15(dy, inv);
-      // fix15 dist = sqrtfix(multfix15(dx, dx) + multfix15(dy, dy));
-      // if (dist < (SEPARATION_DIST))
-      // {
-      // fix15 inv = float2fix15(Q_rsqrt(fix2float15(dist)));
-      // // fix15 normal_x = multfix15(dx, float2fix15(Q_rsqrt(dist)));
-      // // fix15 normal_y = multfix15(dy, float2fix15(Q_rsqrt(dist)));
-      // fix15 normal_x = divfix(dx, inv);
-      // fix15 normal_y = divfix(dy, inv);
 
       fix15 dot = multfix15(normal_x, ball->vx) + multfix15(normal_y, ball->vy);
-      // fix15 intermediate_term = multfix15(float2fix15(-2), dot);
-      // fix15 intermediate_term = multfix15((-65536), dot); // float2fix15(-2) = -2 * 32768
-      fix15 intermediate_term = multfix15(float2fix15(-2), dot); // float2fix15(-2) = -2 * 32768
+      fix15 intermediate_term = multfix15(float2fix15(-2), dot);
       ball->x = peg->x + multfix15(normal_x, (SEPARATION_DIST + int2fix15(1)));
       ball->y = peg->y + multfix15(normal_y, (SEPARATION_DIST + int2fix15(1)));
       ball->vx = ball->vx + (multfix15(normal_x, intermediate_term));
@@ -394,7 +393,6 @@ static inline void collide(Ball *ball, int peg_index)
 
 // update a ball position/status
 void updateBall(Ball *ball, int core) // core picks which bins/total_fallen to use
-// void updateBall(fix15 *x, fix15 *y, fix15 *vx, fix15 *vy, int *prev) // remove rad again
 {
   // did ball cross histogram finish line right below last peg row?
   if (ball->y > BIN_LINE_Y_FIX)
@@ -420,7 +418,6 @@ void updateBall(Ball *ball, int core) // core picks which bins/total_fallen to u
 
     // respawn since the ball is counted in the histogram now
     spawnBall(ball);
-    // spawnBall(x, y, vx, vy);
 
     ball->prev_peg = -1;
   }
@@ -434,25 +431,21 @@ void updateBall(Ball *ball, int core) // core picks which bins/total_fallen to u
   int r0 = (by - 100) / VERTICAL_SEP_INT;
   for (int r = r0; r <= r0 + 1; r++)
   {
-    if (r < 0 || r >= NUM_LEVELS)
+    if (r < 0 || r >= NUM_LEVELS) // before first row or past last row
       continue;
     int u = bx - 320 + (r + 1) * (HORIZONTAL_SEP_INT / 2);
     if (u < 0)
-      continue;
+      /
+          continue;
     int j = u / HORIZONTAL_SEP_INT; // nearest peg in this row
     if (j > r)
       continue;
     collide(ball, (r * (r + 1)) / 2 + j);
   }
-  // for (int peg_index = 0; peg_index < NUM_PEGS; peg_index += 1)
-  // {
-  //   collide(ball, peg_index);
-  // }
 
   if (hitBottom(ball->y))
   {
     spawnBall(ball);
-    // spawnBall(x, y, vx, vy);
     ball->prev_peg = -1;
   }
 
@@ -497,7 +490,7 @@ static PT_THREAD(protothread_anim(struct pt *pt))
     // Wait for the signal that the buffer's changed
     PT_YIELD_UNTIL(pt, draw_start_signal());
     static uint32_t t0; // static: locals are lost across PT_YIELD
-    t0 = time_us_64();  // TIMEEEE
+    t0 = time_us_64();  // TIME
 
     // reset upon change
     if (reset_hist)
@@ -508,16 +501,16 @@ static PT_THREAD(protothread_anim(struct pt *pt))
       total_fallen[1] = 0;
     }
 
-    bool refresh = (stats_tick == 0);
-    stats_tick = (stats_tick + 1) % STATS_PERIOD;
+    bool refresh = (stats_tick == 0);             // variable for refresh check
+    stats_tick = (stats_tick + 1) % STATS_PERIOD; // stats count
 
     if (refresh)
     {
-      sprintf(fallen_str, "Total particles dropped: %d", total_fallen[0] + total_fallen[1]);
-      sprintf(count_str, "Active particles: %d", count);
-      sprintf(bounce_str, "Bounciness: %f", bounciness);
+      sprintf(fallen_str, "Total particles dropped: %d", total_fallen[0] + total_fallen[1]); // total particles string
+      sprintf(count_str, "Active particles: %d", count);                                     // spawn rate
+      sprintf(bounce_str, "Bounciness: %f", bounciness);                                     // bounciness param
       uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
-      sprintf(time_str, "Time elapsed: %d", elapsed_time);
+      sprintf(time_str, "Time elapsed: %d", elapsed_time); // elapsed time
 
       // Calculate histogram
       max_bin = 1; // avoid dividing by 0 if no balls have fallen yet
@@ -619,7 +612,7 @@ static PT_THREAD(protothread_anim1(struct pt *pt))
     PT_SEM_SDK_WAIT(pt, &phys_sem);
 
     int n = frame_n;
-    for (int i = n / 2; i < n; i++)
+    for (int i = n / 2; i < n; i++) // update and draw half of the balls
     {
       updateBall(&balls[i], 1);
       drawBall(fix2int15(balls[i].x), fix2int15(balls[i].y), color);
@@ -690,14 +683,11 @@ void init_audio()
   channel_config_set_read_increment(&c2, true);                      // yes read incrementing
   channel_config_set_write_increment(&c2, false);                    // no write incrementing
   // (X/Y)*sys_clk, where X is the first 16 bytes and Y is the second
-  // sys_clk is 125 MHz unless changed in code. Configured to ~44 kHz
-  // dma_timer_set_fraction(0, 0x0017, 0xffff);
-  // dma_timer_set_fraction(0, 0x0012, 0xffff); // sys_clk is 250 MHz now so just adjusted back something close to 44 KHz
-  dma_timer_set_fraction(0, 11, 7500);
+  // sys_clk is 250 MHz now so just adjusted back something close to 44 KHz
+  dma_timer_set_fraction(0, 1, 6803);
   // 0x3b means timer0 (see SDK manual)
   channel_config_set_dreq(&c2, 0x3b); // DREQ paced by timer 0
   // chain to the controller DMA channel
-  // channel_config_set_chain_to(&c2, ctrl_chan); // Chain to control channel
 
   dma_channel_configure(
       data_chan,                 // Channel to be configured
@@ -707,9 +697,6 @@ void init_audio()
       sine_table_size,           // Number of transfers
       false                      // Don't start immediately.
   );
-
-  // start the control channel
-  // dma_start_channel_mask(1u << ctrl_chan);
 }
 
 // ========================================
@@ -758,8 +745,6 @@ int main()
   initPegShape();
 
   // Initialize the semaphore
-  // Arguments: pointer to sem, initial count, max count
-  // sem_init(&enc_semaphore, 0, 1);
 
   sem_init(&phys_sem, 0, 1);
   sem_init(&done_sem, 0, 1);
