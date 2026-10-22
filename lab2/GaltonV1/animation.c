@@ -334,6 +334,7 @@ void initPegShape(void)
         peg_n++;
       }
 }
+// End of AI-generated code
 
 // draw peg using pre-determined peg shapes
 static inline void drawPeg(int x, int y, char c)
