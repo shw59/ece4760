@@ -62,12 +62,8 @@
 fix15 acceleration[3], gyro[3];
 
 // Arrays for circular display buffer
-fix15 ax[PLOT_WIDTH];
-fix15 ay[PLOT_WIDTH];
-fix15 az[PLOT_WIDTH];
-fix15 gx[PLOT_WIDTH];
-fix15 gy[PLOT_WIDTH];
-fix15 gz[PLOT_WIDTH];
+fix15 beam_angle[PLOT_WIDTH];
+fix15 motor_sig[PLOT_WIDTH];
 
 // Pointer to head of buffer
 volatile int head = 0;
@@ -89,7 +85,6 @@ static struct pt_sem vga_semaphore;
 // Some paramters for PWM
 #define WRAPVAL 6000
 #define CLKDIV 25.0
-uint slice_num;
 
 void drawAxes()
 {
@@ -128,17 +123,27 @@ void drawAxes()
   writeString(screentext);
 }
 
-volatile int throttle = 10;
-volatile float accel_angle;
-volatile float gyro_angle;
 // PWM duty cycle
 volatile int control;
 volatile int old_control;
 volatile int Kp;
+volatile int Kd;
+volatile int Ki;
 volatile float error;
-float desired_angle = 0;
+volatile float desired_angle = 0;
+uint slice_num;
+volatile fix15 filtered_control = 0;
+
+// complementary filter and VGA plotting variables
+volatile int throttle = 10;
+volatile fix15 accel_angle;
+volatile fix15 gyro_angle;
+volatile fix15 filtered_ax = 0;
+volatile fix15 filtered_ay = 0;
+volatile fix15 filtered_az = 0;
 volatile fix15 complementary_angle;
-volatile float gyro_angle_delta;
+volatile fix15 gyro_angle_delta;
+
 // Interrupt service routine
 void on_pwm_wrap()
 {
@@ -147,33 +152,54 @@ void on_pwm_wrap()
   pwm_clear_irq(pwm_gpio_to_slice_num(5));
   gpio_put(14, !gpio_get(14));
 
-  // Update duty cycle
-  // if (control != old_control)
-  // {
-  //   old_control = control;
-  //   pwm_set_chan_level(slice_num, PWM_CHAN_A, control);
-  // }
   // Read the IMU
   // NOTE! This is in 15.16 fixed point. Accel in g's, gyro in deg/s
   // If you want these values in floating point, call fix2float15() on
   // the raw measurements.
   mpu6050_read_raw(acceleration, gyro);
 
-  acceleration[0] = acceleration[0] + ((slice_num - acceleration[0]) >> 6); // ax
-  acceleration[1] = acceleration[1] + ((slice_num - acceleration[1]) >> 6); // ay
-  acceleration[2] = acceleration[2] + ((slice_num - acceleration[2]) >> 6); // az
+  filtered_ax = filtered_ax + ((acceleration[0] - filtered_ax) >> 6); // ax
+  filtered_ay = filtered_ay + ((acceleration[1] - filtered_ay) >> 6); // ay
+  filtered_az = filtered_az + ((acceleration[2] - filtered_az) >> 6); // az
 
-  // // Accelerometer angle (degrees - 15.16 fixed point)
-  // // SMALL ANGLE APPROXIMATION
-  accel_angle = multfix15(divfix(acceleration[0], acceleration[1]), oneeightyoverpi);
-  // // NO SMALL ANGLE APPROXIMATION
-  // // accel_angle = multfix15(float2fix15(atan2(-ax[head], -ay[head]) + M_PI), oneeightyoverpi);
+  // Accelerometer angle (degrees - 15.16 fixed point)
+  // SMALL ANGLE APPROXIMATION
+  // accel_angle = multfix15(divfix(acceleration[0], acceleration[1]), oneeightyoverpi);
+  // NO SMALL ANGLE APPROXIMATION
+  accel_angle = multfix15(float2fix15(atan2(-fix2float15(filtered_ax), fix2float15(filtered_az))), oneeightyoverpi);
 
   // // Gyro angle delta (measurement times timestep) (15.16 fixed point)
-  gyro_angle_delta = multfix15(gyro[2], zeropt001);
+  gyro_angle_delta = multfix15(gyro[1], zeropt001);
 
-  // // Complementary angle (degrees - 15.16 fixed point)
-  complementary_angle = multfix15(complementary_angle - gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
+  // // Complementary angle (degrees - floating point)
+  complementary_angle = multfix15(complementary_angle + gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
+
+  // PID
+  // calculate beam angle error
+  float curr_angle = fix2float15(complementary_angle);
+  error = desired_angle - curr_angle;
+
+  // calculate motor signal via PID formula
+  control = Kp * error;
+
+  // clamp signal from 0-6000
+  float u = Kp * error;
+  if (u > WRAPVAL) {
+    u = WRAPVAL;
+  } else if (u < 0) {
+    u = 0;
+  }
+  control = (int) u;
+
+  // lowpass filter for VGA
+  filtered_control = filtered_control +  (int2fix15(control) - filtered_control) >> 6;
+
+  // Update duty cycle
+  if (control != old_control)
+  {
+    old_control = control;
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, control);
+  }
 
   // Increment drawspeed controller
   throttle += 1;
@@ -183,22 +209,9 @@ void on_pwm_wrap()
     // Zero drawspeed controller
     throttle = 0;
 
-    // Replace oldest data in accel arrays with new sample
-    ax[head] = acceleration[0]; // ax
-    ay[head] = acceleration[1]; // ay
-    az[head] = acceleration[2]; // az
-
-    // lab3 w2 ----
-    // low pass filtered
-    // ax[head] = acceleration[0] + ((slice_num - acceleration[0]) >> 6); // ax
-    // ay[head] = acceleration[1] + ((slice_num - acceleration[1]) >> 6); // ay
-    // az[head] = acceleration[2] + ((slice_num - acceleration[2]) >> 6); // az
-    // // Replace oldest data in gyro arrays with new sample
-    gx[head] = gyro[0];
-    gy[head] = gyro[1];
-    gz[head] = gyro[2];
-
-    // lab3 w2 ----
+    // Replace oldest data in arrays with new sample
+    beam_angle[head] = complementary_angle;
+    motor_sig[head] = filtered_control;
 
     // Move the pointer to the oldest data
     head = ((head + 1) == PLOT_WIDTH) ? 0 : (head + 1);
@@ -233,16 +246,16 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     {
       // up   - negative x acceleration
       // down - positive x acceleration
-      // up   - positive y
-      // down - negative y
+      // up   - positive y gyro
+      // down - negative y gyro
       // printf("%d/n", complementary_angle);
-      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(complementary_angle) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), BLUE);
-      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ax[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), WHITE);
-      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
-      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
-      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
-      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
-      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gz[start])) - OLD_MIN) / OLD_RANGE))), GREEN);
+      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - OLD_MIN) / OLD_RANGE))), BLUE);
+      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(control_buf[start])) / OLD_RANGE))), RED);
+      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
+      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
+      // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
+      // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
+      // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gz[start])) - OLD_MIN) / OLD_RANGE))), GREEN);
       start = ((start + 1) == PLOT_WIDTH) ? 0 : (start + 1);
     }
   }
@@ -250,7 +263,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
   PT_END(pt);
 }
 
-// User input thread. User can change draw speed
+// User input thread. User can change draw speed lol do we need this
 static PT_THREAD(protothread_serial(struct pt *pt))
 {
   PT_BEGIN(pt);
@@ -279,36 +292,24 @@ static PT_THREAD(protothread_serial(struct pt *pt))
         threshold = test_in;
       }
     }
-    // else if (classifier == 'a')
-    // {
-    //   sprintf(pt_serial_out_buffer, "input a duty cycle (0-6000): ");
-    //   serial_write;
-    //   // spawn a thread to do the non-blocking serial read
-    //   serial_read;
-    //   // convert input string to number
-    //   sscanf(pt_serial_in_buffer, "%d", &test_in);
-    //   if (test_in > 6000)
-    //     continue;
-    //   else if (test_in < 0)
-    //     continue;
-    //   else
-    //     control = test_in;
-    // }
-    // else if (classifier == 'p')
-    // {
-    //   sprintf(pt_serial_out_buffer, "input PID proportional gain: ");
-    //   serial_write;
-    //   // spawn a thread to do the non-blocking serial read
-    //   serial_read;
-    //   // convert input string to number
-    //   sscanf(pt_serial_in_buffer, "%d", &test_in);
-    //   // if (test_in > 6000)
-    //   //   continue;
-    //   // else if (test_in < 0)
-    //   //   continue;
-    //   // else
-    //   Kp = test_in;
-    // }
+    else if (classifier == 'a')
+    {
+      sprintf(pt_serial_out_buffer, "desired beam angle: ");
+      serial_write;
+      serial_read;
+      sscanf(pt_serial_in_buffer, "%d", &test_in);
+      desired_angle = test_in;
+    }
+    else if (classifier == 'p')
+    {
+      sprintf(pt_serial_out_buffer, "input PID proportional gain: ");
+      serial_write;
+      // spawn a thread to do the non-blocking serial read
+      serial_read;
+      // convert input string to number
+      sscanf(pt_serial_in_buffer, "%d", &test_in);
+      Kp = test_in;
+    }
   }
   PT_END(pt);
 }
