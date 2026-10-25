@@ -52,6 +52,9 @@
 #define OLD_MIN -250.
 #define OLD_MAX 250.
 #define ACCEL_SCALE 120.0
+#define CTRL_SCALE 0.0833
+#define ANGLE_MIN -90.
+#define ANGLE_RANGE 180.
 
 // Place the plots
 #define TOP_PLOT_BOTTOM 230
@@ -100,11 +103,11 @@ void drawAxes()
   sprintf(screentext, "0");
   setCursor(50, 350);
   writeString(screentext);
-  sprintf(screentext, "+2");
-  setCursor(50, 280);
+  sprintf(screentext, "+90");
+  setCursor(45, 280);
   writeString(screentext);
-  sprintf(screentext, "-2");
-  setCursor(50, 425);
+  sprintf(screentext, "-90");
+  setCursor(45, 425);
   writeString(screentext);
 
   // Draw top plot
@@ -112,13 +115,13 @@ void drawAxes()
   drawHLine(75, 155, 5, CYAN);
   drawHLine(75, 80, 5, CYAN);
   drawVLine(80, 80, 150, CYAN);
-  sprintf(screentext, "0");
+  sprintf(screentext, "3000");
   setCursor(50, 150);
   writeString(screentext);
-  sprintf(screentext, "+250");
+  sprintf(screentext, "6000");
   setCursor(45, 75);
   writeString(screentext);
-  sprintf(screentext, "-250");
+  sprintf(screentext, "0");
   setCursor(45, 225);
   writeString(screentext);
 }
@@ -192,7 +195,7 @@ void on_pwm_wrap()
   control = (int) u;
 
   // lowpass filter for VGA
-  filtered_control = filtered_control +  (int2fix15(control) - filtered_control) >> 6;
+  filtered_control = filtered_control + ((int2fix15(control) - filtered_control) >> 6);
 
   // Update duty cycle
   if (control != old_control)
@@ -249,9 +252,8 @@ static PT_THREAD(protothread_draw(struct pt *pt))
       // up   - positive y gyro
       // down - negative y gyro
       // printf("%d/n", complementary_angle);
-      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - OLD_MIN) / OLD_RANGE))), BLUE);
-      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(control_buf[start])) / OLD_RANGE))), RED);
-      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
+      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - ANGLE_MIN) / ANGLE_RANGE))), BLUE);
+      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(motor_sig[start]) * CTRL_SCALE) / OLD_RANGE))), RED);      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
       // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
@@ -343,8 +345,15 @@ int main()
   gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
 
   // MPU6050 initialization
+  // printf("before reset\n");
   mpu6050_reset();
+  // uint8_t buf;
+  // int ret68 = i2c_read_timeout_us(I2C_CHAN, 0x68, &buf, 1, false, 10000);
+  // int ret69 = i2c_read_timeout_us(I2C_CHAN, 0x69, &buf, 1, false, 10000);
+  // printf("probe 0x68: %d, probe 0x69: %d\n", ret68, ret69);
+  // printf("after reset\n");
   mpu6050_read_raw(acceleration, gyro);
+  // printf("after read\n");
 
   ////////////////////////////////////////////////////////////////////////
   ///////////////////////// PWM CONFIGURATION ////////////////////////////
@@ -352,6 +361,8 @@ int main()
   // Tell GPIO's 4,5 that they allocated to the PWM
   gpio_set_function(5, GPIO_FUNC_PWM);
   gpio_set_function(4, GPIO_FUNC_PWM);
+  gpio_pull_up(SDA_PIN); 
+  gpio_pull_up(SCL_PIN);
 
   // Find out which PWM slice is connected to GPIO 5 (it's slice 2, same for 4)
   slice_num = pwm_gpio_to_slice_num(5);
