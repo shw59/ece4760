@@ -61,6 +61,9 @@
 #define BOTTOM_PLOT_BOTTOM 430
 #define PLOT_WIDTH 530
 
+// Button
+#define BUTTON 26
+
 // Arrays in which raw measurements will be stored
 fix15 acceleration[3], gyro[3];
 
@@ -88,6 +91,9 @@ static struct pt_sem vga_semaphore;
 // Some paramters for PWM
 #define WRAPVAL 6000
 #define CLKDIV 25.0
+
+// Clamp parameter for Integrator Windup
+#define INT_WIND_UP 500
 
 void drawAxes()
 {
@@ -133,7 +139,9 @@ volatile int Kp;
 volatile int Kd;
 volatile int Ki;
 volatile float error;
+volatile float cumulative_error = 0;
 volatile float desired_angle = 0;
+volatile float prev_error = 0;
 uint slice_num;
 volatile fix15 filtered_control = 0;
 
@@ -146,6 +154,14 @@ volatile fix15 filtered_ay = 0;
 volatile fix15 filtered_az = 0;
 volatile fix15 complementary_angle;
 volatile fix15 gyro_angle_delta;
+
+volatile uint64_t start_us;
+volatile bool run_sequence = false;
+void gpio_callback(uint gpio, uint32_t events)
+{
+  run_sequence = true;
+  start_us = time_us_64();
+}
 
 // Interrupt service routine
 void on_pwm_wrap()
@@ -176,23 +192,50 @@ void on_pwm_wrap()
 
   // // Complementary angle (degrees - floating point)
   complementary_angle = multfix15(complementary_angle + gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
-
+  if (run_sequence)
+  {
+    uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
+    if (elapsed_time < 5)
+    {
+      desired_angle = 0.0;
+    }
+    else if (elapsed_time < 10)
+    {
+      desired_angle = 30.0;
+    }
+    else if (elapsed_time < 15)
+    {
+      desired_angle = -30.0;
+    }
+    else if (elapsed_time > 15)
+    {
+      desired_angle = 0;
+      run_sequence = false;
+    }
+  }
   // PID
   // calculate beam angle error
   float curr_angle = fix2float15(complementary_angle);
   error = desired_angle - curr_angle;
 
+  // calculate cumulative error
+  cumulative_error += error * zeropt001; /////////// check if delta t is zeropt001
+
   // calculate motor signal via PID formula
-  control = Kp * error;
+  control = (Kp * error) + (Ki * cumulative_error) + (Kd * (error - prev_error) / zeropt001); // (Kd * (error ))
+  prev_error = error;
 
   // clamp signal from 0-6000
   float u = Kp * error;
-  if (u > WRAPVAL) {
+  if (u > WRAPVAL)
+  {
     u = WRAPVAL;
-  } else if (u < 0) {
+  }
+  else if (u < 0)
+  {
     u = 0;
   }
-  control = (int) u;
+  control = (int)u;
 
   // lowpass filter for VGA
   filtered_control = filtered_control + ((int2fix15(control) - filtered_control) >> 6);
@@ -251,9 +294,11 @@ static PT_THREAD(protothread_draw(struct pt *pt))
       // down - positive x acceleration
       // up   - positive y gyro
       // down - negative y gyro
-      // printf("%d/n", complementary_angle);
+      printf("Desired Angle: %d/n", desired_angle);
+      printf("Complementary Angle: %d/n", complementary_angle);
+      printf("Kp, Ki, Kd: %d, %d, %d/n", Kp, Ki, Kd);
       drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - ANGLE_MIN) / ANGLE_RANGE))), BLUE);
-      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(motor_sig[start]) * CTRL_SCALE) / OLD_RANGE))), RED);      // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
+      drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(motor_sig[start]) * CTRL_SCALE) / OLD_RANGE))), RED); // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
       // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
@@ -274,7 +319,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
   static float float_in;
   while (1)
   {
-    sprintf(pt_serial_out_buffer, "input a command (t, a, p): ");
+    sprintf(pt_serial_out_buffer, "input a command (t, a, p, d, i): ");
     serial_write;
     // spawn a thread to do the non-blocking serial read
     serial_read;
@@ -311,6 +356,30 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       // convert input string to number
       sscanf(pt_serial_in_buffer, "%d", &test_in);
       Kp = test_in;
+    }
+    else if (classifier == 'd')
+    {
+      sprinf(pt_serial_out_buffer, "input PID differential gain: ");
+      serial_write;
+      // spawn a thread to do the non-blocking serial read
+      serial_read;
+      // convert input string to number
+      sscanf(pt_serial_in_buffer, "%d", &test_in);
+      Kd = test_in;
+    }
+    else if (classifier == 'i')
+    {
+      sprinf(pt_serial_out_buffer, "input PID integral gain: ");
+      serial_write;
+      // spawn a thread to do the non-blocking serial read
+      serial_read;
+      // convert input string to number
+      sscanf(pt_serial_in_buffer, "%d", &test_in);
+      Ki = test_in;
+    }
+    else
+    {
+      sprinf(pt_serial_out_buffer, "invalid input, try again");
     }
   }
   PT_END(pt);
@@ -361,8 +430,14 @@ int main()
   // Tell GPIO's 4,5 that they allocated to the PWM
   gpio_set_function(5, GPIO_FUNC_PWM);
   gpio_set_function(4, GPIO_FUNC_PWM);
-  gpio_pull_up(SDA_PIN); 
+  gpio_pull_up(SDA_PIN);
   gpio_pull_up(SCL_PIN);
+
+  // Configure GPIO interrupt on encoder pin A
+  gpio_init(BUTTON);
+  gpio_set_dir(BUTTON, GPIO_IN);
+  gpio_pull_up(BUTTON);
+  gpio_set_irq_enabled_with_callback(BUTTON, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 
   // Find out which PWM slice is connected to GPIO 5 (it's slice 2, same for 4)
   slice_num = pwm_gpio_to_slice_num(5);
