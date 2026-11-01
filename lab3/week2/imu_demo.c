@@ -91,7 +91,8 @@ volatile int threshold = 10;
 static struct pt_sem vga_semaphore;
 
 // Some paramters for PWM
-#define WRAPVAL 5500
+#define WRAPVAL 5999
+#define MAX_DUTY 5500
 #define CLKDIV 25.0
 
 // Clamp parameter for Integrator Windup
@@ -140,6 +141,7 @@ volatile int old_control;
 volatile float Kp = 275;
 volatile float Kd = 10000;
 volatile float Ki = 0.03125;
+volatile float i = 0.0f;
 volatile float error;
 volatile float cumulative_error = 0;
 volatile float desired_angle = 0;
@@ -159,10 +161,23 @@ volatile fix15 gyro_angle_delta;
 
 volatile uint64_t start_us;
 volatile bool run_sequence = false;
+volatile bool button_held = false;
+
 void gpio_callback(uint gpio, uint32_t events)
 {
-  run_sequence = true;
-  start_us = time_us_64();
+  if (!gpio_get(BUTTON))
+  { // pressed
+    button_held = true;
+    run_sequence = false;
+  }
+  else if (button_held) // released
+  {
+    button_held = false;
+    run_sequence = true;
+    start_us = time_us_64();
+  }
+  // run_sequence = true;
+  // start_us = time_us_64();
 }
 
 // Interrupt service routine
@@ -194,51 +209,76 @@ void on_pwm_wrap()
 
   // // Complementary angle (degrees - floating point)
   complementary_angle = multfix15(complementary_angle + gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
+
   // if (run_sequence)
   // {
   //   uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
   //   if (elapsed_time < 5)
   //   {
-  //     desired_angle = 0.0;
+  //     desired_angle = 0.0f;
   //   }
   //   else if (elapsed_time < 10)
   //   {
-  //     desired_angle = 30.0;
+  //     desired_angle = 30.0f;
   //   }
   //   else if (elapsed_time < 15)
   //   {
-  //     desired_angle = -30.0;
+  //     desired_angle = -30.0f;
   //   }
-  //   else if (elapsed_time > 15)
+  //   else
   //   {
-  //     desired_angle = 0;
+  //     desired_angle = 0.0f;
   //     run_sequence = false;
   //   }
   // }
   // PID
   // calculate beam angle error
+
   float curr_angle = fix2float15(complementary_angle);
   error = desired_angle - curr_angle;
 
   // calculate cumulative error
-  cumulative_error += error; /////////// check if delta t is zeropt001
+  // cumulative_error += error; /////////// check if delta t is zeropt001
 
   // calculate motor signal via PID formula
   // control = (Kp * error) + (Ki * cumulative_error);
 
   // float ki_error = (Ki * cumulative_error) >  ? (Ki * cumulative_error);
-  control = (Kp * error) + (Ki * cumulative_error) + (Kd * (error - prev_error)); // (Kd * (error ))
+  float p = (Kp * error);
+
+  float d = (Kd * (error - prev_error));
+
+  control = p + i + d; // (Kd * (error ))
   prev_error = error;
 
   // clamp signal from 0-6000
+  // also for integral windup
+  // checks if the controller output is saturated.
+  bool saturated = false;
   float u = control;
-  if (u > WRAPVAL)
+  if (u > WRAPVAL) // change to MAX_DUTY after testing
   {
     u = WRAPVAL;
+    saturated = true;
   }
   else if (u < 0)
   {
     u = 0;
+    saturated = true;
+  }
+  // if the sign of the controller output is the same as the sign of the error (i.e. the integrator is making the situation worse)
+  bool same_sign = (u > 0) == (error > 0);
+  if (!(saturated && same_sign))
+  {
+    i += (Ki * error);
+    if (i > INT_WIND_UP)
+    {
+      i = INT_WIND_UP;
+    }
+    if (i < -INT_WIND_UP)
+    {
+      i = -INT_WIND_UP;
+    }
   }
   control = u;
 
@@ -275,7 +315,11 @@ static PT_THREAD(protothread_draw(struct pt *pt))
 
   static int start;
   static int i;
-
+  char kp_str[64];
+  char kd_str[64];
+  char ki_str[64];
+  char desired_angle_str[64];
+  char angle_str[64];
   // Draw axes
   drawAxes();
   // Copy to other buffer
@@ -290,6 +334,18 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     // Clear the buffer, draw the axes
     clearLowFrame(0, BLACK);
     drawAxes();
+
+    sprintf(desired_angle_str, "Desired Angle: %f", desired_angle);
+    sprintf(angle_str, "Actual Angle: %f", fix2float15(complementary_angle));
+    sprintf(kp_str, "Kp: %f", Kp);
+    sprintf(kd_str, "Kd: %f", Kd);
+    sprintf(ki_str, "Ki: %f", Ki);
+
+    drawTextAscii(10, 10, desired_angle_str, WHITE, BLACK);
+    drawTextAscii(10, 22, angle_str, WHITE, BLACK);
+    drawTextAscii(10, 34, kp_str, WHITE, BLACK);
+    drawTextAscii(10, 46, kd_str, WHITE, BLACK);
+    drawTextAscii(10, 58, ki_str, WHITE, BLACK);
 
     // Plot data oldest-->newest
     start = head;
@@ -349,8 +405,8 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sprintf(pt_serial_out_buffer, "desired beam angle: ");
       serial_write;
       serial_read;
-      sscanf(pt_serial_in_buffer, "%d", &test_in);
-      desired_angle = test_in;
+      sscanf(pt_serial_in_buffer, "%d", &float_in);
+      desired_angle = float_in;
     }
     else if (classifier == 'p')
     {
@@ -359,8 +415,8 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       // spawn a thread to do the non-blocking serial read
       serial_read;
       // convert input string to number
-      sscanf(pt_serial_in_buffer, "%d", &test_in);
-      Kp = test_in;
+      sscanf(pt_serial_in_buffer, "%f", &float_in);
+      Kp = float_in;
     }
     else if (classifier == 'd')
     {
@@ -369,8 +425,8 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       // spawn a thread to do the non-blocking serial read
       serial_read;
       // convert input string to number
-      sscanf(pt_serial_in_buffer, "%d", &test_in);
-      Kd = test_in;
+      sscanf(pt_serial_in_buffer, "%f", &float_in);
+      Kd = float_in;
     }
     else if (classifier == 'i')
     {
@@ -379,8 +435,8 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       // spawn a thread to do the non-blocking serial read
       serial_read;
       // convert input string to number
-      sscanf(pt_serial_in_buffer, "%d", &test_in);
-      Ki = test_in;
+      sscanf(pt_serial_in_buffer, "%f", &float_in);
+      Ki = float_in;
     }
     else
     {
@@ -442,11 +498,11 @@ int main()
   gpio_pull_up(SDA_PIN);
   gpio_pull_up(SCL_PIN);
 
-  // Configure GPIO interrupt on encoder pin A
-  // gpio_init(BUTTON);
-  // gpio_set_dir(BUTTON, GPIO_IN);
-  // gpio_pull_up(BUTTON);
-  // gpio_set_irq_enabled_with_callback(BUTTON, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+  // Configure GPIO interrupt on button
+  gpio_init(BUTTON);
+  gpio_set_dir(BUTTON, GPIO_IN);
+  gpio_pull_up(BUTTON);
+  gpio_set_irq_enabled_with_callback(BUTTON, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
 
   // Find out which PWM slice is connected to GPIO 5 (it's slice 2, same for 4)
   slice_num = pwm_gpio_to_slice_num(5);
