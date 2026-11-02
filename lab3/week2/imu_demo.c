@@ -72,6 +72,7 @@ fix15 acceleration[3], gyro[3];
 // Arrays for circular display buffer
 fix15 beam_angle[PLOT_WIDTH];
 fix15 motor_sig[PLOT_WIDTH];
+float desired_buf[PLOT_WIDTH];
 
 // Pointer to head of buffer
 volatile int head = 0;
@@ -92,11 +93,11 @@ static struct pt_sem vga_semaphore;
 
 // Some paramters for PWM
 #define WRAPVAL 5999
-#define MAX_DUTY 5500
+#define MAX_DUTY 3000
 #define CLKDIV 25.0
 
 // Clamp parameter for Integrator Windup
-#define INT_WIND_UP 2000.0f
+#define INT_WIND_UP 3500.0f
 
 void drawAxes()
 {
@@ -138,9 +139,9 @@ void drawAxes()
 // PWM duty cycle
 volatile int control;
 volatile int old_control;
-volatile float Kp = 275;
-volatile float Kd = 10000;
-volatile float Ki = 0.03125;
+volatile float Kp = 180;
+volatile float Kd = 22000;
+volatile float Ki = 0.125;
 volatile float i = 0.0f;
 volatile float error;
 volatile float cumulative_error = 0;
@@ -210,27 +211,27 @@ void on_pwm_wrap()
   // // Complementary angle (degrees - floating point)
   complementary_angle = multfix15(complementary_angle + gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
 
-  // if (run_sequence)
-  // {
-  //   uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
-  //   if (elapsed_time < 5)
-  //   {
-  //     desired_angle = 0.0f;
-  //   }
-  //   else if (elapsed_time < 10)
-  //   {
-  //     desired_angle = 30.0f;
-  //   }
-  //   else if (elapsed_time < 15)
-  //   {
-  //     desired_angle = -30.0f;
-  //   }
-  //   else
-  //   {
-  //     desired_angle = 0.0f;
-  //     run_sequence = false;
-  //   }
-  // }
+  if (run_sequence)
+  {
+    uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
+    if (elapsed_time < 5)
+    {
+      desired_angle = 0.0f;
+    }
+    else if (elapsed_time < 10)
+    {
+      desired_angle = 30.0f;
+    }
+    else if (elapsed_time < 15)
+    {
+      desired_angle = -30.0f;
+    }
+    else
+    {
+      desired_angle = 0.0f;
+      run_sequence = false;
+    }
+  }
   // PID
   // calculate beam angle error
 
@@ -256,9 +257,9 @@ void on_pwm_wrap()
   // checks if the controller output is saturated.
   bool saturated = false;
   float u = control;
-  if (u > WRAPVAL) // change to MAX_DUTY after testing
+  if (u > MAX_DUTY) // change to MAX_DUTY after testing
   {
-    u = WRAPVAL;
+    u = MAX_DUTY;
     saturated = true;
   }
   else if (u < 0)
@@ -282,6 +283,12 @@ void on_pwm_wrap()
   }
   control = u;
 
+  if (button_held)
+  {
+    control = 0;
+    i = 0;
+  }
+
   // lowpass filter for VGA
   filtered_control = filtered_control + ((int2fix15(control) - filtered_control) >> 6);
 
@@ -303,6 +310,7 @@ void on_pwm_wrap()
     // Replace oldest data in arrays with new sample
     beam_angle[head] = complementary_angle;
     motor_sig[head] = filtered_control;
+    desired_buf[head] = desired_angle;
 
     // Move the pointer to the oldest data
     head = ((head + 1) == PLOT_WIDTH) ? 0 : (head + 1);
@@ -346,7 +354,6 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     drawTextAscii(10, 34, kp_str, WHITE, BLACK);
     drawTextAscii(10, 46, kd_str, WHITE, BLACK);
     drawTextAscii(10, 58, ki_str, WHITE, BLACK);
-
     // Plot data oldest-->newest
     start = head;
     for (i = 0; i < PLOT_WIDTH; i++)
@@ -360,6 +367,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
       // printf("/nKp, Ki, Kd: %d, %d, %d", Kp, Ki, Kd);
       drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - ANGLE_MIN) / ANGLE_RANGE))), BLUE);
       drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(motor_sig[start]) * CTRL_SCALE) / OLD_RANGE))), RED); // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
+      drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((desired_buf[start] - ANGLE_MIN) / ANGLE_RANGE))), YELLOW);
       // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
@@ -405,7 +413,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sprintf(pt_serial_out_buffer, "desired beam angle: ");
       serial_write;
       serial_read;
-      sscanf(pt_serial_in_buffer, "%d", &float_in);
+      sscanf(pt_serial_in_buffer, "%f", &float_in);
       desired_angle = float_in;
     }
     else if (classifier == 'p')
@@ -468,10 +476,13 @@ int main()
   // Initialize VGA
   initVGA();
 
-  // gpio_init(IMU_POWER);
-  // gpio_set_dir(IMU_POWER, GPIO_OUT);
-  // gpio_put(IMU_POWER, 0);
-  // gpio_put(IMU_POWER, 1);
+  gpio_init(IMU_POWER);
+  gpio_set_dir(IMU_POWER, GPIO_OUT);
+  gpio_set_drive_strength(IMU_POWER, GPIO_DRIVE_STRENGTH_8MA);
+  gpio_put(IMU_POWER, 0);
+  sleep_ms(250);
+  gpio_put(IMU_POWER, 1);
+  sleep_ms(150);
   ////////////////////////////////////////////////////////////////////////
   ///////////////////////// I2C CONFIGURATION ////////////////////////////
   i2c_init(I2C_CHAN, I2C_BAUD_RATE);
