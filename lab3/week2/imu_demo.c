@@ -92,9 +92,9 @@ volatile int threshold = 10;
 static struct pt_sem vga_semaphore;
 
 // Some paramters for PWM
-#define WRAPVAL 5999
-#define MAX_DUTY 3000
-#define CLKDIV 25.0
+#define WRAPVAL 5999  // highest pwm counter wrap value
+#define MAX_DUTY 3000 // motor pwm duty limit
+#define CLKDIV 25.0   // clock divider for pwm
 
 // Clamp parameter for Integrator Windup
 #define INT_WIND_UP 3500.0f
@@ -142,16 +142,15 @@ volatile int old_control;
 volatile float Kp = 180;
 volatile float Kd = 22000;
 volatile float Ki = 0.125;
-volatile float i = 0.0f;
+volatile float i = 0.0f; // integrator value
 volatile float error;
-volatile float cumulative_error = 0;
 volatile float desired_angle = 0;
 volatile float prev_error = 0;
 uint slice_num;
 volatile fix15 filtered_control = 0;
 
 // complementary filter and VGA plotting variables
-volatile int throttle = 10;
+volatile int throttle = 30;
 volatile fix15 accel_angle;
 volatile fix15 gyro_angle;
 volatile fix15 filtered_ax = 0;
@@ -171,20 +170,17 @@ void gpio_callback(uint gpio, uint32_t events)
     button_held = true;
     run_sequence = false;
   }
-  else if (button_held) // released
+  else if (button_held) // released after pressed
   {
     button_held = false;
     run_sequence = true;
-    start_us = time_us_64();
+    start_us = time_us_64(); // start sequence
   }
-  // run_sequence = true;
-  // start_us = time_us_64();
 }
 
 // Interrupt service routine
 void on_pwm_wrap()
 {
-
   // Clear the interrupt flag that brought us here
   pwm_clear_irq(pwm_gpio_to_slice_num(5));
   gpio_put(14, !gpio_get(14));
@@ -195,9 +191,10 @@ void on_pwm_wrap()
   // the raw measurements.
   mpu6050_read_raw(acceleration, gyro);
 
-  filtered_ax = filtered_ax + ((acceleration[0] - filtered_ax) >> 6); // ax
-  filtered_ay = filtered_ay + ((acceleration[1] - filtered_ay) >> 6); // ay
-  filtered_az = filtered_az + ((acceleration[2] - filtered_az) >> 6); // az
+  // Low pass the accelerometer values
+  filtered_ax = filtered_ax + ((acceleration[0] - filtered_ax) >> 6);
+  filtered_ay = filtered_ay + ((acceleration[1] - filtered_ay) >> 6);
+  filtered_az = filtered_az + ((acceleration[2] - filtered_az) >> 6);
 
   // Accelerometer angle (degrees - 15.16 fixed point)
   // SMALL ANGLE APPROXIMATION
@@ -205,13 +202,13 @@ void on_pwm_wrap()
   // NO SMALL ANGLE APPROXIMATION
   accel_angle = multfix15(float2fix15(atan2(-fix2float15(filtered_ax), fix2float15(filtered_az))), oneeightyoverpi);
 
-  // // Gyro angle delta (measurement times timestep) (15.16 fixed point)
+  // Gyro angle delta (measurement times timestep) (15.16 fixed point)
   gyro_angle_delta = multfix15(gyro[1], zeropt001);
 
-  // // Complementary angle (degrees - floating point)
+  // Complementary angle (degrees - floating point)
   complementary_angle = multfix15(complementary_angle + gyro_angle_delta, zeropt999) + multfix15(accel_angle, zeropt001);
 
-  if (run_sequence)
+  if (run_sequence) // button sequence
   {
     uint64_t elapsed_time = (time_us_64() - start_us) / 1000000;
     if (elapsed_time < 5)
@@ -234,26 +231,17 @@ void on_pwm_wrap()
   }
   // PID
   // calculate beam angle error
-
   float curr_angle = fix2float15(complementary_angle);
   error = desired_angle - curr_angle;
 
-  // calculate cumulative error
-  // cumulative_error += error; /////////// check if delta t is zeropt001
+  float p = (Kp * error); // proportional term
 
-  // calculate motor signal via PID formula
-  // control = (Kp * error) + (Ki * cumulative_error);
+  float d = (Kd * (error - prev_error)); // derivative term
 
-  // float ki_error = (Ki * cumulative_error) >  ? (Ki * cumulative_error);
-  float p = (Kp * error);
-
-  float d = (Kd * (error - prev_error));
-
-  control = p + i + d; // (Kd * (error ))
+  control = p + i + d; // PID
   prev_error = error;
 
-  // clamp signal from 0-6000
-  // also for integral windup
+  // clamp signal from 0-MAX_DUTY
   // checks if the controller output is saturated.
   bool saturated = false;
   float u = control;
@@ -269,7 +257,7 @@ void on_pwm_wrap()
   }
   // if the sign of the controller output is the same as the sign of the error (i.e. the integrator is making the situation worse)
   bool same_sign = (u > 0) == (error > 0);
-  if (!(saturated && same_sign))
+  if (!(saturated && same_sign)) // Integrator Windup check to clamp values
   {
     i += (Ki * error);
     if (i > INT_WIND_UP)
@@ -283,7 +271,7 @@ void on_pwm_wrap()
   }
   control = u;
 
-  if (button_held)
+  if (button_held) // motor should be given 0 pwm
   {
     control = 0;
     i = 0;
@@ -296,7 +284,7 @@ void on_pwm_wrap()
   if (control != old_control)
   {
     old_control = control;
-    pwm_set_chan_level(slice_num, PWM_CHAN_A, control);
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, control); // set motor pwm
   }
 
   // Increment drawspeed controller
@@ -343,6 +331,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     clearLowFrame(0, BLACK);
     drawAxes();
 
+    // Draw the values for angles and the PID parameters
     sprintf(desired_angle_str, "Desired Angle: %f", desired_angle);
     sprintf(angle_str, "Actual Angle: %f", fix2float15(complementary_angle));
     sprintf(kp_str, "Kp: %f", Kp);
@@ -362,12 +351,15 @@ static PT_THREAD(protothread_draw(struct pt *pt))
       // down - positive x acceleration
       // up   - positive y gyro
       // down - negative y gyro
-      // printf("/nDesired Angle: %d", desired_angle);
-      // printf("/nComplementary Angle: %d", complementary_angle);
-      // printf("/nKp, Ki, Kd: %d, %d, %d", Kp, Ki, Kd);
+
+      // Draw actual angle within bottom plot
       drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(beam_angle[start])) - ANGLE_MIN) / ANGLE_RANGE))), BLUE);
+      // Draw motor pwm values within top plot
       drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)(fix2float15(motor_sig[start]) * CTRL_SCALE) / OLD_RANGE))), RED); // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(ay[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), RED);
+      // Draw desired angle line within bottom plot
       drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((desired_buf[start] - ANGLE_MIN) / ANGLE_RANGE))), YELLOW);
+
+      // Accelerometer and Gyroscope prints
       // drawPixel(LEFT_EDGE + i, (BOTTOM_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(az[start]) * ACCEL_SCALE) - OLD_MIN) / OLD_RANGE))), GREEN);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
@@ -379,7 +371,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
   PT_END(pt);
 }
 
-// User input thread. User can change draw speed lol do we need this
+// User input thread. User can change draw speed
 static PT_THREAD(protothread_serial(struct pt *pt))
 {
   PT_BEGIN(pt);
@@ -395,7 +387,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
     // convert input string to number
     sscanf(pt_serial_in_buffer, "%c", &classifier);
 
-    // num_independents = test_in ;
+    // Timestep
     if (classifier == 't')
     {
       sprintf(pt_serial_out_buffer, "timestep: ");
@@ -408,6 +400,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
         threshold = test_in;
       }
     }
+    // Desired Angle
     else if (classifier == 'a')
     {
       sprintf(pt_serial_out_buffer, "desired beam angle: ");
@@ -416,6 +409,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sscanf(pt_serial_in_buffer, "%f", &float_in);
       desired_angle = float_in;
     }
+    // Proportional gain
     else if (classifier == 'p')
     {
       sprintf(pt_serial_out_buffer, "input PID proportional gain: ");
@@ -426,6 +420,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sscanf(pt_serial_in_buffer, "%f", &float_in);
       Kp = float_in;
     }
+    // Derivative gain
     else if (classifier == 'd')
     {
       sprintf(pt_serial_out_buffer, "input PID differential gain: ");
@@ -436,6 +431,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sscanf(pt_serial_in_buffer, "%f", &float_in);
       Kd = float_in;
     }
+    // Integral gain
     else if (classifier == 'i')
     {
       sprintf(pt_serial_out_buffer, "input PID integral gain: ");
@@ -446,6 +442,7 @@ static PT_THREAD(protothread_serial(struct pt *pt))
       sscanf(pt_serial_in_buffer, "%f", &float_in);
       Ki = float_in;
     }
+    // Invalid input
     else
     {
       sprintf(pt_serial_out_buffer, "invalid input, try again");
@@ -490,15 +487,8 @@ int main()
   gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
 
   // MPU6050 initialization
-  // printf("before reset\n");
   mpu6050_reset();
-  // uint8_t buf;
-  // int ret68 = i2c_read_timeout_us(I2C_CHAN, 0x68, &buf, 1, false, 10000);
-  // int ret69 = i2c_read_timeout_us(I2C_CHAN, 0x69, &buf, 1, false, 10000);
-  // printf("probe 0x68: %d, probe 0x69: %d\n", ret68, ret69);
-  // printf("after reset\n");
   mpu6050_read_raw(acceleration, gyro);
-  // printf("after read\n");
 
   ////////////////////////////////////////////////////////////////////////
   ///////////////////////// PWM CONFIGURATION ////////////////////////////
