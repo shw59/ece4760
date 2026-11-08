@@ -159,10 +159,11 @@ volatile fix15 filtered_az = 0;
 volatile fix15 complementary_angle;
 volatile fix15 gyro_angle_delta;
 
-volatile uint64_t start_us;
-volatile bool run_sequence = false;
-volatile bool button_held = false;
+volatile uint64_t start_us;         // start time for the most recent button sequence run
+volatile bool run_sequence = false; // program running sequence or not
+volatile bool button_held = false;  // button is held or not
 
+// GPIO ISR on button
 void gpio_callback(uint gpio, uint32_t events)
 {
   if (!gpio_get(BUTTON))
@@ -174,7 +175,7 @@ void gpio_callback(uint gpio, uint32_t events)
   {
     button_held = false;
     run_sequence = true;
-    start_us = time_us_64(); // start sequence
+    start_us = time_us_64(); // start time for sequence
   }
 }
 
@@ -364,7 +365,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gx[start])) - OLD_MIN) / OLD_RANGE))), WHITE);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gy[start])) - OLD_MIN) / OLD_RANGE))), RED);
       // drawPixel(LEFT_EDGE + i, (TOP_PLOT_BOTTOM - (int)(NEW_RANGE * ((float)((fix2float15(gz[start])) - OLD_MIN) / OLD_RANGE))), GREEN);
-      start = ((start + 1) == PLOT_WIDTH) ? 0 : (start + 1);
+      start = ((start + 1) == PLOT_WIDTH) ? 0 : (start + 1); // move to the next value in the data arrays
     }
   }
 
