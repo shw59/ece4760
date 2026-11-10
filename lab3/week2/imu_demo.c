@@ -474,6 +474,7 @@ int main()
   // Initialize VGA
   initVGA();
 
+  // Set up the IMU power
   gpio_init(IMU_POWER);
   gpio_set_dir(IMU_POWER, GPIO_OUT);
   gpio_set_drive_strength(IMU_POWER, GPIO_DRIVE_STRENGTH_8MA);
