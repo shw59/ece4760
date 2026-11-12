@@ -29,6 +29,12 @@ enum colors {BLACK, DARK_GREEN, MED_GREEN, GREEN,
             DARK_BLUE, BLUE, LIGHT_BLUE, CYAN,
             RED, DARK_ORANGE, ORANGE, YELLOW, 
             MAGENTA, PINK, LIGHT_PINK, WHITE} ;
+            
+
+// Augmentations
+void drawCell(short x, short y, char color) ;
+int checkNeighbors(short x, short y) ;
+int isAlive(short x, short y) ;
 
 
 // VGA init -- Do this before any other libraries

@@ -3,6 +3,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/dma.h"
+#include "hardware/sync.h"
 // Our assembled programs:
 // Each gets the name <pio_filename.pio.h>
 #include "hsync.pio.h"
@@ -82,9 +83,9 @@ DrawPixel is faster
 //Double-buffered!
 //Turn off second buffer to save memory on RP2040.
 // =============================
-//#define DOUBLE_BUFFER_60
+#define DOUBLE_BUFFER_60
 //#define DOUBLE_BUFFER_30
-#define DOUBLE_BUFFER_NONE
+//#define DOUBLE_BUFFER_NONE
 // !!!~=========================!!!
 // ===============================
 
@@ -371,6 +372,30 @@ void drawPixel(short x, short y, char color) {
     else {
         *(draw_loc) = (*(draw_loc) & BOTTOMMASK) | (color) ;
     }
+}
+
+// Check status of neighbors
+int checkNeighbors(short x, short y) {
+    char * draw_loc = (current_draw_buffer + ((640 * y + x) >> 1)) ;
+
+    return (isAlive(x-1, y-1) + isAlive(x, y-1) + isAlive(x+1, y-1) +
+            isAlive(x-1, y) + isAlive(x+1, y) +
+            isAlive(x-1, y+1) + isAlive(x, y+1) + isAlive(x+1, y+1));
+}
+
+// VGA routine to draw a cell
+void drawCell(short x, short y, char color) {
+
+    drawPixel(x<<1, y<<1, color) ;
+    drawPixel((x<<1) + 1, (y<<1), color) ;
+    drawPixel((x<<1), (y<<1) + 1, color) ;
+    drawPixel((x<<1) + 1, (y<<1) + 1, color) ;
+
+}
+
+// Check if alive
+int isAlive(short x, short y) {
+    return (readPixel(x<<1, y<<1) & 1) ;
 }
 
 // vertical line
