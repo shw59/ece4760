@@ -1,3 +1,6 @@
+// include FFT library
+#include "f_Audio_FFT/pt_cornell_rp2040_v1_4.h"
+// include standard libraries
 #include "stdlib.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +45,8 @@
 volatile unsigned int phase_accum_main;
 volatile unsigned int phase_incr_main = (800.0 * two32) / Fs;
 
+// Place ADC samples from DMA here
+uint8_t sample_array[NUM_SAMPLES];
 // SPI data
 uint16_t DAC_data; // output value
 
@@ -67,6 +72,16 @@ uint16_t DAC_data; // output value
 
 volatile int sin_table[sine_table_size]; // sine table of 256 elements for all accumulator / phasor angle values
 
+typedef struct
+{
+    int16_t sample_size;   // size of the audio buffer
+    int16_t W;             // integration window size
+    int16_t *yin_diff;     // d_t difference function
+    float abs_threshold, ; // absolute threshold (step 4 in paper)
+    float aperiodicity;    //
+    int16_t tau_max;       // max lag size
+} Yin;
+
 // Alarm ISR
 static void alarm_irq(void)
 {
@@ -90,29 +105,30 @@ static void alarm_irq(void)
     gpio_put(ISR_GPIO, 0);
 }
 
+// Difference Function (Step 2 of the paper)
+void yin_diff(Yin *yin, int16_t *x)
+{
+    fix15 sum;
+    // equation 6
+    for (int tau = 0; tau < yin->tau_max; tau++) // searching through values of lag (tau)
+    {
+        for (int j = 0; j < yin->W; j++)
+        {
+            sum = x[j] - x[j + tau];
+            yin->yin_diff[tau] += sum * sum;
+        }
+    }
+}
 // This thread runs on core 0
 static PT_THREAD(protothread_core_0(struct pt *pt))
 {
     // Indicate thread beginning
     PT_BEGIN(pt);
+
     while (1)
     {
-        // toggle gpio 25
-        gpio_put(LED_PIN, !gpio_get(LED_PIN));
-        //=======Sound generation========
-
-        // Read the ADC
-        adc_val = adc_read();
-
-        // Convert ADC reading (0-4095) to frequency (0-10,000 Hz)
-        frequency = ((uint32_t)adc_val * 10000) / 4095;
-
-        // Update DDS phase increment
-        phase_incr_main = (frequency * two32) / Fs;
-
-        // Print the value
-        printf("ADC value: %d\n", adc_val);
     }
+    PT_END(pt);
 }
 
 int main()
@@ -128,6 +144,8 @@ int main()
     adc_init();
     adc_gpio_init(ADC_PIN);
     adc_select_input(ADC_MUX);
+    sample_chan = dma_claim_unused_channel(true);
+    control_chan = dma_claim_unused_channel(true);
 
     // Map LED to GPIO port, make it low
     gpio_init(LED_PIN);
