@@ -76,9 +76,10 @@ typedef struct
 {
     int16_t sample_size;   // size of the audio buffer
     int16_t W;             // integration window size
-    int16_t *yin_diff;     // d_t difference function
+    float *diff;           // d_t difference function
+    float *cmndf_diff;     // d'_t difference function
     float abs_threshold, ; // absolute threshold (step 4 in paper)
-    float aperiodicity;    //
+    float periodicity;     //
     int16_t tau_max;       // max lag size
 } Yin;
 
@@ -108,17 +109,119 @@ static void alarm_irq(void)
 // Difference Function (Step 2 of the paper)
 void yin_diff(Yin *yin, int16_t *x)
 {
-    fix15 sum;
+    float sum;
     // equation 6
     for (int tau = 0; tau < yin->tau_max; tau++) // searching through values of lag (tau)
     {
         for (int j = 0; j < yin->W; j++)
         {
             sum = x[j] - x[j + tau];
-            yin->yin_diff[tau] += sum * sum;
+            yin->diff[tau] += sum * sum;
+            yin->cmndf_diff[tau] += sum * sum;
         }
     }
 }
+
+// Cumulative Mean Normalized Difference Function (Step 3)
+void yin_cmndf(Yin *yin)
+{
+    // replacing diff function with CMD function d'
+    float sum;
+    yin->cmndf_diff[0] = 1;
+
+    for (int tau = 1; tau < yin->tau_max; tau++)
+    {
+        sum += yin->cmndf_diff[tau];
+        yin->cmndf_diff[tau] *= (tau / sum);
+    }
+}
+
+// Absolute Threshold (step 4) set an abs threshold + choose smallest tau that gives min of d' deeper than threshold
+int16_t yin_threshold(Yin *yin)
+{
+    int tau;
+    for (tau = 0; tau < yin->tau_max; tau++)
+    {
+        if (yin->cmndf_diff[tau] < yin->abs_threshold)
+        { // smaller tau than abs threshold
+            while ((tau + 1 < yin->tau_max) && (yin->tau > yin->cmndf_diff[tau + 1]))
+            {
+                // keep going to find the local minimum of d' (will stop as soon as it starts increasing)
+                tau += 1;
+            }
+
+            // we break here as we found the
+            // "smallest value of tau that gives a minimum of d' deeper than"
+            // the abs threshold
+
+            /*
+                according to the paper:
+                "d'(T) is proportional to the aperiodic/total power ratio.
+                A candidate T is accepted in the set if this ratio
+                is below threshold."
+
+                this could be helpful for tuning as the threshold dictates
+                what is accepted or not.
+                low periodicity indicates not very stable note
+                high periodicity indicates stable note
+            */
+            yin->periodicity = 1 - yin->cmndf_diff[tau];
+            break;
+        }
+    }
+
+    // if none is found, we pick global minimum
+    if (tau == yin->tau_max || yin->cmndf_diff[tau] >= yin->abs_threshold)
+    {
+        yin->periodicity = 0;
+        // for now instead of finding global min (may keep this b/c maybe it's best to reject it)
+        tau = -1;
+    }
+}
+
+// Parabolic Interpolation: Step 5
+// Solves possible incremental error issue when period is not amultiple of the sampling period
+float yin_parabolic(Yin *yin, int16_t tau_est)
+{
+    // immediate neighors of tau_est
+    int16_t left_n = tau_est < 1 ? tau_est : tau_est - 1;
+    int16_t right_n = (tau_est + 1 > yin->tau_max) ? tau_est : tau_est + 1;
+    int16_t interpolated_tau;
+
+    // parabolical interpolation to find a better estimate of tau
+    if (left_n == tau_est) // not parabola
+        // pick the smallest raw d function value
+        interpolated_tau = (yin->diff[tau_est] <= yin->diff[right_n]) ? tau_est : right_n;
+
+    else if (right_n == tauEstimate) // not parabola
+        // pick the smallest raw d function value
+        interpolated_tau = (yin->diff[tau_est] <= yin->diff[left_n]) ? tau_est : left_n;
+    else // parabola
+    {
+        float l = yin->cmndf_diff[left_n];
+        float m = yin->yin_cmndf[tau_est];
+        float r = yin->yin_cmndf[right_n];
+
+        /*
+        say l = -1; m = 0; r = 1. find a, b, and c from y = ax^2 + bx + c
+        using x in {left, mid, right}.
+        m = c
+        l = a - b + c
+        r = a + b + c
+
+        => l + r = 2a + 2c
+        => (l + r - m) / 2 = a
+        => (r - m - (l + r - m) / 2) = b
+        => (r - l) / 2 = b
+
+        find minimum so -b/2a
+        => (r - l) / (2 * (2 * m - r - l))
+        */
+        interpolated_tau = (r - l) / (4 * m - 2 * r - 2 * l) + tau_est;
+    }
+    return interpolated_tau;
+}
+
 // This thread runs on core 0
 static PT_THREAD(protothread_core_0(struct pt *pt))
 {
