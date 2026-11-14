@@ -39,11 +39,19 @@
 
 // DDS parameters
 #define two32 4294967296.0 // 2^32
-#define Fs 50000
+#define DDS_Fs 50000
 #define DELAY 20 // 1/Fs (in microseconds)
+
+// YIN params
+#define YIN_FS 10000        // analysis sample rate (Hz)
+#define YIN_SAMPLE_SIZE 512 // around 51.2 ms of audio
+
+#define YIN_TAU_MAX 143     // YIN_FS / f_min = 10000 / 70 Hz: end of threshold search
+#define YIN_THRESHOLD 0.10f // paper's value; try 0.15f if too many -1 results
+
 // the DDS units:
 volatile unsigned int phase_accum_main;
-volatile unsigned int phase_incr_main = (800.0 * two32) / Fs;
+volatile unsigned int phase_incr_main = (800.0 * two32) / DDS_Fs;
 
 // Place ADC samples from DMA here
 uint8_t sample_array[NUM_SAMPLES];
@@ -221,7 +229,43 @@ float yin_parabolic(Yin *yin, int16_t tau_est)
     }
     return interpolated_tau;
 }
+Yin yin_init(int16_t sample_size, int16_t W, float threshold, int16_t tau_max)
+{
+    Yin yin;
 
+    yin->sample_size = sample_size;
+    yin->W = W;
+    yin->tau_max = tau_max;
+    yin->abs_threshold = threshold;
+    yin->periodicity = 0.0;
+
+    yin->diff = (float *)malloc(sizeof(float) * W);
+    yin->cmndf_diff = (float *)malloc(sizeof(float) * W);
+
+    for (int i = 0; i < W; i++)
+    {
+        yin->diff[i] = 0;
+        yin->cmndf_diff[i] = 0;
+    }
+    return yin;
+}
+// Runs the YIN Algorithm
+float yin_algorithm(int16_t *samples)
+{
+    Yin yin = yin_init(YIN_SAMPLE_SIZE, YIN_SAMPLE_SIZE / 2, YIN_THRESHOLD, YIN_TAU_MAX)
+
+        yin_diff(&yin, &samples);
+
+    yin_cmndf(&yin);
+
+    int16_t tau_est = yin_threshold(&yin);
+    float pitch = -1;
+    if (tau_est != -1)
+    {
+        pitch = YIN_FS / yin_parabolic(&yin, tau_est);
+    }
+    return pitch;
+}
 // This thread runs on core 0
 static PT_THREAD(protothread_core_0(struct pt *pt))
 {
