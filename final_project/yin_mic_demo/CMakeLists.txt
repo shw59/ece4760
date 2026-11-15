@@ -39,7 +39,6 @@ target_sources(audio_demo PRIVATE audio_demo.c VGA/vga16_graphics_v3.c YIN/v1.c)
 # must match with executable name
 target_link_libraries(  audio_demo
                         PRIVATE
-                        # YIN/v1.c
                         pico_stdlib
                         pico_multicore
                         pico_bootsel_via_double_reset
