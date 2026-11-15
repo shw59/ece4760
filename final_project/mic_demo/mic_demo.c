@@ -67,7 +67,7 @@
 // Only every DECIMATION-th sample is stored for display
 // (like "threshold" in the PID code). Time shown on screen =
 // PLOT_WIDTH * DECIMATION / SAMPLE_RATE_HZ seconds.
-#define DECIMATION 30
+#define DECIMATION 1
 
 // We will start drawing at column 81
 #define LEFT_EDGE 81
@@ -98,15 +98,17 @@ char screentext[40];
 static struct repeating_timer sample_timer;
 
 // Display gain: how many times to magnify the signal around the DC bias
-#define DISPLAY_GAIN 8
+#define DISPLAY_GAIN 6
 #define ADC_MID 2048
 
 static inline int adc_to_y(uint16_t v)
 {
-  int centered = ((int)v - ADC_MID) * DISPLAY_GAIN;  // zero-centered, magnified
+  int centered = ((int)v - ADC_MID) * DISPLAY_GAIN; // zero-centered, magnified
   int y = (PLOT_TOP + PLOT_HEIGHT / 2) - ((centered * PLOT_HEIGHT) >> 12);
-  if (y < PLOT_TOP) y = PLOT_TOP;                    // clamp to the plot area
-  if (y > PLOT_BOTTOM) y = PLOT_BOTTOM;
+  if (y < PLOT_TOP)
+    y = PLOT_TOP; // clamp to the plot area
+  if (y > PLOT_BOTTOM)
+    y = PLOT_BOTTOM;
   return y;
 }
 
@@ -197,9 +199,16 @@ static PT_THREAD(protothread_draw(struct pt *pt))
 
     // Plot data oldest-->newest
     start = head;
+    int y_prev = adc_to_y(mic_buf[start]);
     for (i = 0; i < PLOT_WIDTH; i++)
     {
-      drawPixel(LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
+      // drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
+      // y_prev = adc_to_y(mic_buf[start]);
+      int y = adc_to_y(mic_buf[start]);
+      if (i > 0)
+        drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, y, GREEN);
+      y_prev = y;
+      // drawPixel(LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
       start = ((start + 1) == PLOT_WIDTH) ? 0 : (start + 1); // next value in the data array
     }
   }
@@ -217,7 +226,7 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
   while (1)
   {
     // toggle gpio 25
-    gpio_put(LED_PIN, !gpio_get(LED_PIN));
+    // gpio_put(LED_PIN, !gpio_get(LED_PIN));
     PT_YIELD_usec(500000);
   }
 
