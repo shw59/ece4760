@@ -68,7 +68,7 @@
 // Only every DECIMATION-th sample is stored for display
 // (like "threshold" in the PID code). Time shown on screen =
 // PLOT_WIDTH * DECIMATION / SAMPLE_RATE_HZ seconds.
-#define DECIMATION 1
+#define THRESHOLD 1
 
 // We will start drawing at column 81
 #define LEFT_EDGE 81
@@ -169,7 +169,7 @@ bool sample_callback(struct repeating_timer *t)
   // Increment drawspeed controller
   throttle += 1;
   // Maintain a circular buffer for display
-  if (throttle >= DECIMATION)
+  if (throttle >= THRESHOLD)
   {
     // Zero drawspeed controller
     throttle = 0;
@@ -214,8 +214,8 @@ static PT_THREAD(protothread_draw(struct pt *pt))
 
     // Draw text
     sprintf(title_str, "Mic signal: %d Hz, %d ms window",
-            SAMPLE_RATE_HZ / DECIMATION,
-            (int)((1000L * PLOT_WIDTH * DECIMATION) / SAMPLE_RATE_HZ));
+            SAMPLE_RATE_HZ / THRESHOLD,
+            (int)((1000L * PLOT_WIDTH * THRESHOLD) / SAMPLE_RATE_HZ));
     sprintf(info_str, "Latest ADC: %d", (int)latest_sample);
     sprintf(pitch_str, "Actual Pitch: %f", pitch);
     sprintf(exp_pitch_str, "Expected Pitch: %f", expected_pitch);

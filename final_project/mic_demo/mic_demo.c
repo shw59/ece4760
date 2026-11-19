@@ -64,10 +64,8 @@
 #define SAMPLE_RATE_HZ 20000
 #define SAMPLE_PERIOD_US (1000000 / SAMPLE_RATE_HZ)
 
-// Only every DECIMATION-th sample is stored for display
-// (like "threshold" in the PID code). Time shown on screen =
-// PLOT_WIDTH * DECIMATION / SAMPLE_RATE_HZ seconds.
-#define DECIMATION 1
+// Time shown on screen = PLOT_WIDTH * DECIMATION / SAMPLE_RATE_HZ seconds.
+#define THRESHOLD 1
 
 // We will start drawing at column 81
 #define LEFT_EDGE 81
@@ -81,7 +79,7 @@
 // === shared data
 // ==========================================
 // Circular display buffer (raw 12-bit ADC values)
-uint16_t mic_buf[PLOT_WIDTH];
+uint16_t motor_buf[PLOT_WIDTH];
 
 // Pointer to head of buffer (oldest sample)
 volatile int head = 0;
@@ -148,13 +146,13 @@ bool sample_callback(struct repeating_timer *t)
   // Increment drawspeed controller
   throttle += 1;
   // Maintain a circular buffer for display
-  if (throttle >= DECIMATION)
+  if (throttle >= THRESHOLD)
   {
     // Zero drawspeed controller
     throttle = 0;
 
     // Replace oldest data in array with new sample
-    mic_buf[head] = val;
+    motor_buf[head] = val;
 
     // Move the pointer to the oldest data
     head = ((head + 1) == PLOT_WIDTH) ? 0 : (head + 1);
@@ -190,8 +188,8 @@ static PT_THREAD(protothread_draw(struct pt *pt))
 
     // Draw text
     sprintf(title_str, "Mic signal: %d Hz, %d ms window",
-            SAMPLE_RATE_HZ / DECIMATION,
-            (int)((1000L * PLOT_WIDTH * DECIMATION) / SAMPLE_RATE_HZ));
+            SAMPLE_RATE_HZ / THRESHOLD,
+            (int)((1000L * PLOT_WIDTH * THRESHOLD) / SAMPLE_RATE_HZ));
     sprintf(info_str, "Latest ADC: %d", (int)latest_sample);
     printf("%u\n", latest_sample);
     drawTextAscii(10, 10, title_str, WHITE, BLACK);
@@ -199,12 +197,12 @@ static PT_THREAD(protothread_draw(struct pt *pt))
 
     // Plot data oldest-->newest
     start = head;
-    int y_prev = adc_to_y(mic_buf[start]);
+    int y_prev = adc_to_y(motor_buf[start]);
     for (i = 0; i < PLOT_WIDTH; i++)
     {
       // drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
       // y_prev = adc_to_y(mic_buf[start]);
-      int y = adc_to_y(mic_buf[start]);
+      int y = adc_to_y(motor_buf[start]);
       if (i > 0)
         drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, y, GREEN);
       y_prev = y;
@@ -264,7 +262,7 @@ int main()
   // Start the display buffer at mid-scale (flat line)
   for (int k = 0; k < PLOT_WIDTH; k++)
   {
-    mic_buf[k] = 2048;
+    motor_buf[k] = 2048;
   }
 
   // Start the sampling ISR on core 0
