@@ -38,9 +38,9 @@
 // ==========================================
 // === pins
 // ==========================================
-#define PUL_PIN 2
+#define PUL_PIN 4
 #define DIR_PIN 3
-#define ENA_PIN 4
+#define ENA_PIN 2
 
 #define ENCODER_A 6
 #define ENCODER_B 7
@@ -50,17 +50,24 @@
 // === constants
 // ==========================================
 #define STEP_PHASE_DELAY 50 // 10kHz pulse frequency (us)
-#define DIR_SETUP_US 10 // delay after changing DIR before stepping
+#define DIR_SETUP_US 10     // delay after changing DIR before stepping
 #define PULSES_PER_CLICK 16 // microsteps per encoder click (tune this)
+
+// ==========================================
+// === startup motor test (temporary)
+// ==========================================
+#define RUN_MOTOR_TEST 1         // set to 0 to skip the test
+#define TEST_PULSES_PER_REV 3200 // set to match your DM320T DIP switch "pulse/rev" setting
+#define TEST_HALF_PERIOD_US 1000 // 1 ms high + 1 ms low = 500 pulses/s (slow on purpose)
 
 // ==========================================
 // === shared data
 // ==========================================
-volatile int32_t count = 0; // encoder clicks (+ clockwise, - counter-clockwise)
-volatile int32_t dir = 0; // tracks current dirction motor is set to rotate
-volatile int32_t target = 0; // desired position in microsteps
+volatile int32_t count = 0;         // encoder clicks (+ clockwise, - counter-clockwise)
+volatile int32_t dir = 0;           // tracks current dirction motor is set to rotate
+volatile int32_t target = 0;        // desired position in microsteps
 volatile bool motor_enabled = true; // toggled by the button
-static int32_t position = 0; // tracks microsteps taken since program start
+static int32_t position = 0;        // tracks microsteps taken since program start
 
 // ==========================================
 // === motor helper functions
@@ -98,6 +105,35 @@ static void step_once(bool desired_dir)
   sleep_us(STEP_PHASE_DELAY);
   gpio_put(PUL_PIN, 0);
   sleep_us(STEP_PHASE_DELAY);
+}
+
+// Temporary hardware test: one revolution forward, pause, one revolution back.
+// Uses its own slow timing so the motor can't stall from going too fast.
+static void motor_test(void)
+{
+  printf("Motor test: starting in 2 s\n");
+  sleep_ms(2000);
+
+  motor_set_enabled(true);
+  sleep_ms(100); // give the driver time to enable
+
+  for (int d = 1; d >= 0; d--)
+  {
+    gpio_put(DIR_PIN, d);
+    dir = d;
+    sleep_us(DIR_SETUP_US);
+
+    printf("Motor test: %s, %d pulses\n", d ? "forward" : "reverse", TEST_PULSES_PER_REV);
+    for (int i = 0; i < TEST_PULSES_PER_REV; i++)
+    {
+      gpio_put(PUL_PIN, 1);
+      sleep_us(TEST_HALF_PERIOD_US);
+      gpio_put(PUL_PIN, 0);
+      sleep_us(TEST_HALF_PERIOD_US);
+    }
+    sleep_ms(1000);
+  }
+  printf("Motor test: done\n");
 }
 
 // ==========================================
@@ -209,6 +245,10 @@ int main()
 
   // Setup the motor pins
   motor_init();
+
+#if RUN_MOTOR_TEST
+  motor_test();
+#endif
 
   // Encoder pins (A is the interrupt, B is just read inside the ISR)
   gpio_init(ENCODER_A);

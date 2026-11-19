@@ -273,8 +273,9 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
     periodicity = out.periodicity;
     yin_idx = 0;
     yin_ready = false; // re-arm: ISR starts filling again
-    printf("\nd': %f", yin.min_diff);
-    printf("\ntau: %f", yin.min_tau);
+    // printf("\nd': %f", yin.min_diff);
+    // printf("\ntau: %f", yin.min_tau);
+    printf("d': %.4f  tau: %d  pitch: %.2f\n", yin.min_diff, yin.min_tau, pitch);
   }
 
   PT_END(pt);
