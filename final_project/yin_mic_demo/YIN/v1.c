@@ -165,6 +165,8 @@ int16_t yin_threshold(Yin *yin)
                 low periodicity indicates not very stable note
                 high periodicity indicates stable note
             */
+            yin->min_tau = tau;
+            yin->min_diff = yin->cmndf_diff[tau];
             yin->periodicity = 1 - yin->cmndf_diff[tau];
             break;
         }
@@ -176,6 +178,9 @@ int16_t yin_threshold(Yin *yin)
         yin->periodicity = 0;
         // for now instead of finding global min (may keep this b/c maybe it's best to reject it)
         tau = -1;
+        yin->min_tau = tau;
+        yin->min_diff = -1;
+        yin->periodicity = 1 - yin->cmndf_diff[tau];
     }
     return tau;
 }

@@ -227,7 +227,6 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     drawTextAscii(10, 34, pitch_str, WHITE, BLACK);
     drawTextAscii(10, 46, exp_pitch_str, WHITE, BLACK);
     drawTextAscii(10, 58, periodicity_str, WHITE, BLACK);
-
     // Plot data oldest-->newest
     start = head;
     int y_prev = adc_to_y(mic_buf[start]);
@@ -257,7 +256,8 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
   static bool yin_initialized = false;
   if (!yin_initialized)
   {
-    yin = yin_init(YIN_SAMPLES, YIN_SAMPLES / 2, YIN_THRESHOLD, YIN_TAU_MAX);
+    // yin = yin_init(YIN_SAMPLES, YIN_SAMPLES / 2, YIN_THRESHOLD, YIN_TAU_MAX);
+    yin = yin_init(YIN_SAMPLES, 737, YIN_THRESHOLD, YIN_TAU_MAX);
     yin_initialized = true;
   }
 
@@ -273,6 +273,8 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
     periodicity = out.periodicity;
     yin_idx = 0;
     yin_ready = false; // re-arm: ISR starts filling again
+    printf("\nd': %f", yin.min_diff);
+    printf("\ntau: %f", yin.min_tau);
   }
 
   PT_END(pt);

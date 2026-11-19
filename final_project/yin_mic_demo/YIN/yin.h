@@ -1,4 +1,5 @@
 #define YIN_TAU_MIN 50
+#define YIN_TAU_MAX 286
 #define YIN_THRESHOLD 0.10f // paper's value; try 0.15f if too many -1 results
 
 typedef struct
@@ -10,6 +11,8 @@ typedef struct
   float abs_threshold; // absolute threshold (step 4 in paper)
   float periodicity;   //
   int16_t tau_max;     // max lag size
+  int16_t min_tau;
+  float min_diff;
 } Yin;
 
 typedef struct
