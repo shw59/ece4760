@@ -1,5 +1,5 @@
 /**
- * Encoder knob -> stepper motor, with encoder count shown on VGA
+ * Encoder knob -> stepper motor, with encoder count and motor status shown on VGA
  *
  * VGA CONNECTIONS
  *  - GPIO 16 ---> VGA Hsync
@@ -11,9 +11,9 @@
  *  - GND ---> VGA GND
  *
  * STEPPER DRIVER
- *  - GPIO 2 ---> PUL
+ *  - GPIO 4 ---> PUL
  *  - GPIO 3 ---> DIR
- *  - GPIO 4 ---> ENA
+ *  - GPIO 2 ---> ENA
  *
  * ENCODER
  *  - GPIO 6 ---> Encoder A
@@ -50,24 +50,28 @@
 // === constants
 // ==========================================
 #define STEP_PHASE_DELAY 50 // 10kHz pulse frequency (us)
-#define DIR_SETUP_US 10     // delay after changing DIR before stepping
+#define DIR_SETUP_US 10 // delay after changing DIR before stepping
 #define PULSES_PER_CLICK 16 // microsteps per encoder click (tune this)
+
+// Software debouncing: edges closer together than this are ignored
+#define ENC_DEBOUNCE_US 2000 // encoder A (increase if you still see double counts)
+#define SW_DEBOUNCE_US 50000 // push button (50 ms)
 
 // ==========================================
 // === startup motor test (temporary)
 // ==========================================
-#define RUN_MOTOR_TEST 1         // set to 0 to skip the test
-#define TEST_PULSES_PER_REV 3200 // set to match your DM320T DIP switch "pulse/rev" setting
-#define TEST_HALF_PERIOD_US 1000 // 1 ms high + 1 ms low = 500 pulses/s (slow on purpose)
+#define RUN_MOTOR_TEST 1 // set to 0 to skip the test
+#define TEST_PULSES_PER_REV 3200 // set to match pulse/rev dipswitch setting
+#define TEST_HALF_PERIOD_US 1000 // delay of each high/low toggle of the pulse line
 
 // ==========================================
 // === shared data
 // ==========================================
-volatile int32_t count = 0;         // encoder clicks (+ clockwise, - counter-clockwise)
-volatile int32_t dir = 0;           // tracks current dirction motor is set to rotate
-volatile int32_t target = 0;        // desired position in microsteps
+volatile int32_t count = 0; // encoder clicks (+ clockwise, - counter-clockwise)
+volatile int32_t dir = 0; // tracks current dirction motor is set to rotate
+volatile int32_t target = 0; // desired position in microsteps
 volatile bool motor_enabled = true; // toggled by the button
-static int32_t position = 0;        // tracks microsteps taken since program start
+static int32_t position = 0; // tracks microsteps taken since program start
 
 // ==========================================
 // === motor helper functions
@@ -107,8 +111,7 @@ static void step_once(bool desired_dir)
   sleep_us(STEP_PHASE_DELAY);
 }
 
-// Temporary hardware test: one revolution forward, pause, one revolution back.
-// Uses its own slow timing so the motor can't stall from going too fast.
+// quick test: one revolution forward, pause, one revolution back
 static void motor_test(void)
 {
   printf("Motor test: starting in 2 s\n");
@@ -123,7 +126,6 @@ static void motor_test(void)
     dir = d;
     sleep_us(DIR_SETUP_US);
 
-    printf("Motor test: %s, %d pulses\n", d ? "forward" : "reverse", TEST_PULSES_PER_REV);
     for (int i = 0; i < TEST_PULSES_PER_REV; i++)
     {
       gpio_put(PUL_PIN, 1);
@@ -141,8 +143,17 @@ static void motor_test(void)
 // ==========================================
 void gpio_callback(uint gpio, uint32_t events)
 {
+  static uint32_t last_a_us = 0;
+  static uint32_t last_sw_us = 0;
+  uint32_t now = time_us_32();
+
   if (gpio == ENCODER_A)
   {
+    // debouncing: ignore edges that arrive too soon after the last one
+    if (now - last_a_us < ENC_DEBOUNCE_US)
+      return;
+    last_a_us = now;
+
     if (gpio_get(ENCODER_B))
     { // clockwise
       count += 1;
@@ -156,6 +167,10 @@ void gpio_callback(uint gpio, uint32_t events)
   }
   else if (gpio == SW)
   {
+    if (now - last_sw_us < SW_DEBOUNCE_US)
+      return;
+    last_sw_us = now;
+
     motor_enabled = !motor_enabled;
     motor_set_enabled(motor_enabled);
   }
@@ -169,6 +184,7 @@ static PT_THREAD(protothread_draw(struct pt *pt))
   PT_BEGIN(pt);
 
   static char title_str[32];
+  static char status_str[32];
   static char count_str[16];
 
   copy_buffer_to_other();
@@ -184,6 +200,18 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     // Title
     sprintf(title_str, "Encoder count");
     drawTextAscii(10, 10, title_str, WHITE, BLACK);
+
+    // Motor enable status
+    if (motor_enabled)
+    {
+      sprintf(status_str, "Motor: ENABLED");
+      drawTextAscii(10, 22, status_str, GREEN, BLACK);
+    }
+    else
+    {
+      sprintf(status_str, "Motor: DISABLED");
+      drawTextAscii(10, 22, status_str, RED, BLACK);
+    }
 
     // Big count
     sprintf(count_str, "%ld", (long)count);
