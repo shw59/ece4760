@@ -93,7 +93,7 @@
 // === motor parameters
 // ==========================================
 #define STEP_PHASE_DELAY 50 // 10kHz pulse frequency (us)
-#define DIR_SETUP_US 10 // delay after changing DIR before stepping
+#define DIR_SETUP_US 10     // delay after changing DIR before stepping
 #define PULSES_PER_CLICK 16 // microsteps per encoder click (tune this)
 
 // Software debouncing: edges closer together than this are ignored
@@ -104,11 +104,11 @@
 // === shared data
 // ==========================================
 // motor variables
-volatile int32_t count = 0; // encoder clicks (+ clockwise, - counter-clockwise)
-volatile int32_t dir = 0; // tracks current dirction motor is set to rotate
-volatile int32_t target = 0; // desired position in microsteps
+volatile int32_t count = 0;         // encoder clicks (+ clockwise, - counter-clockwise)
+volatile int32_t dir = 0;           // tracks current dirction motor is set to rotate
+volatile int32_t target = 0;        // desired position in microsteps
 volatile bool motor_enabled = true; // toggled by the button
-static int32_t position = 0; // tracks microsteps taken since program start
+static int32_t position = 0;        // tracks microsteps taken since program start
 
 // Circular display buffer (raw 12-bit ADC values)
 uint16_t mic_buf[PLOT_WIDTH];
@@ -128,11 +128,30 @@ volatile int throttle = 0;
 volatile uint16_t latest_sample = 0;
 
 // Pitch
+#define E2_PITCH 82.41 // low e
+#define A2_PITCH 110
+#define D3_PITCH 146.83
+#define G3_PITCH 196
+#define B3_PITCH 246.94
+#define E4_PITCH 329.63 // high e
 volatile float pitch = -1;
-float expected_pitch = 500;
+float expected_pitch = E4_PITCH;
+volatile bool pitch_ready = 0;
+
+// Steps
+#define NOTCH 16.67 // FROM THE TUNING APP
+#define E2_STEPS 20 / NOTCH
+#define A2_STEPS 24 / NOTCH
+#define D3_STEPS 24 / NOTCH
+#define G3_STEPS 63 / NOTCH
+#define B3_STEPS 42 / NOTCH
+#define E4_STEPS 68 / NOTCH
 
 // Periodicity
 volatile float periodicity = 0;
+
+// Cents
+volatile float err_cents = 0;
 
 // character array
 char screentext[40];
@@ -301,9 +320,11 @@ static PT_THREAD(protothread_draw(struct pt *pt))
   char title_str[64];
   char pitch_str[64];
   char exp_pitch_str[64];
-  char periodicity_str[64];
+  char pitch_status_str[64];
+  // char periodicity_str[64];
   char status_str[32];
   char count_str[48];
+  char cent_str[64];
 
   // Draw axes
   drawAxes();
@@ -326,19 +347,23 @@ static PT_THREAD(protothread_draw(struct pt *pt))
     sprintf(info_str, "Latest ADC: %d", (int)latest_sample);
     sprintf(exp_pitch_str, "Expected Pitch: %f", expected_pitch);
     sprintf(pitch_str, "Actual Pitch: %f", pitch);
-    sprintf(periodicity_str, "Periodicity: %f", periodicity);
+    // sprintf(periodicity_str, "Periodicity: %f", periodicity);
+    sprintf(pitch_status_str, pitch_ready ? "PITCH: READY" : "PITCH: WAITING");
     sprintf(status_str, motor_enabled ? "Motor: ENABLED" : "Motor: DISABLED");
     sprintf(count_str, "Encoder Step Count: %ld", (long)count);
+    sprintf(cent_str, "Error in Cents: %f", err_cents);
 
     // printf("%u\n", latest_sample);
     drawTextAscii(10, 10, title_str, WHITE, BLACK);
     drawTextAscii(10, 22, info_str, WHITE, BLACK);
     drawTextAscii(10, 34, exp_pitch_str, WHITE, BLACK);
     drawTextAscii(10, 46, pitch_str, WHITE, BLACK);
-    drawTextAscii(10, 58, periodicity_str, WHITE, BLACK);
+    // drawTextAscii(10, 58, periodicity_str, WHITE, BLACK);
+    drawTextAscii(10, 58, pitch_status_str, WHITE, BLACK);
     drawTextAscii(10, 70, status_str, motor_enabled ? GREEN : RED, BLACK);
     drawTextAscii(10, 82, count_str, WHITE, BLACK);
-    
+    drawTextAscii(10, 94, cent_str, WHITE, BLACK);
+
     // Plot data oldest-->newest
     start = head;
     int y_prev = adc_to_y(mic_buf[start]);
@@ -380,17 +405,20 @@ static PT_THREAD(protothread_core_0(struct pt *pt))
     PT_YIELD_UNTIL(pt, yin_ready);
 
     YinOut out = yin_algorithm(&yin, yin_buf);
+    if (out.pitch != -1 && pitch_ready == 0)
+    {
+      pitch = out.pitch;
+      periodicity = out.periodicity;
+      yin_idx = 0;
+      yin_ready = false; // re-arm: ISR starts filling again
+      // figure out error in cents
+      err_cents = 1200.0 * log2(pitch / expected_pitch);
+      pitch_ready = 1;
+    }
 
-    pitch = out.pitch;
-    periodicity = out.periodicity;
-    yin_idx = 0;
-    yin_ready = false; // re-arm: ISR starts filling again
     // printf("\nd': %f", yin.min_diff);
     // printf("\ntau: %f", yin.min_tau);
-    printf("d': %.4f  tau: %d  pitch: %.2f\n", yin.min_diff, yin.min_tau, pitch);
-
-    // figure out error in cents
-    float err_cents = 1200.0 * log2(pitch / expected_pitch);
+    // printf("d': %.4f  tau: %d  pitch: %.2f\n", yin.min_diff, yin.min_tau, pitch);
 
     // WIP need to translate cent error into correct motor correction
     // pegs turn diff directions to tighten or loosen depending on which side of the headstock
@@ -451,7 +479,7 @@ int main()
   adc_init();
   adc_gpio_init(ADC_PIN);
   adc_select_input(ADC_MUX);
-  
+
   // Setup the motor pins
   motor_init();
 
