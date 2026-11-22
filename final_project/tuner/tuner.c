@@ -1,0 +1,500 @@
+/**
+ * Hunter Adams (vha3@cornell.edu)
+ *
+ * Takes in microphone input and displays waveform on VGA
+ *
+ * VGA CONNECTIONS
+ *  - GPIO 16 ---> VGA Hsync
+ *  - GPIO 17 ---> VGA Vsync
+ *  - GPIO 18 ---> 470 ohm resistor ---> VGA Green
+ *  - GPIO 19 ---> 330 ohm resistor ---> VGA Green
+ *  - GPIO 20 ---> 330 ohm resistor ---> VGA Blue
+ *  - GPIO 21 ---> 330 ohm resistor ---> VGA Red
+ *  - RP2040 GND ---> VGA GND
+ *
+ * MICROPHONE
+ *  - GPIO 28 ---> Mic output [0-3.3V] (ADC channel 2)
+ *
+ * KEYPAD CONNECTIONS
+ *  - GPIO 9   -->  330 ohms  --> Pin 1 (button row 1)
+ *  - GPIO 10  -->  330 ohms  --> Pin 2 (button row 2)
+ *  - GPIO 11  -->  330 ohms  --> Pin 3 (button row 3)
+ *  - GPIO 12  -->  330 ohms  --> Pin 4 (button row 4)
+ *  - GPIO 13  -->     Pin 5 (button col 1)
+ *  - GPIO 14  -->     Pin 6 (button col 2)
+ *  - GPIO 15  -->     Pin 7 (button col 3)
+ *
+ * SERIAL CONNECTIONS
+ *  - GPIO 0        -->     UART RX (white)
+ *  - GPIO 1        -->     UART TX (green)
+ *  - RP2040 GND    -->     UART GND
+ */
+
+// Include standard libraries
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+// Include PICO libraries
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+// Include hardware libraries
+#include "hardware/pio.h"
+#include "hardware/dma.h"
+#include "hardware/sync.h"
+#include "hardware/clocks.h"
+#include "hardware/irq.h"
+#include "hardware/gpio.h"
+#include "hardware/timer.h"
+#include "hardware/adc.h"
+// Include custom libraries
+#include "VGA/vga16_graphics_v3.h"
+#include "YIN/yin.h"
+#include "pt_cornell_rp2040_v1_4.h"
+
+// ==========================================
+// === pins
+// ==========================================
+// microphone
+#define LED_PIN 25
+#define ADC_PIN 28
+#define ADC_MUX 2
+
+// motor
+#define PUL_PIN 4
+#define DIR_PIN 3
+#define ENA_PIN 2
+
+// encoder/buttons
+#define ENCODER_A 6
+#define ENCODER_B 7
+#define SW 8
+
+// ==========================================
+// === sampling / plot parameters
+// ==========================================
+#define SAMPLE_RATE_HZ 20000
+#define SAMPLE_PERIOD_US (1000000 / SAMPLE_RATE_HZ)
+
+// Only every DECIMATION-th sample is stored for display
+// (like "threshold" in the PID code). Time shown on screen =
+// PLOT_WIDTH * DECIMATION / SAMPLE_RATE_HZ seconds.
+#define THRESHOLD 1
+
+// We will start drawing at column 81
+#define LEFT_EDGE 81
+// Place the plot
+#define PLOT_WIDTH 530
+#define PLOT_TOP 110
+#define PLOT_BOTTOM 430
+#define PLOT_HEIGHT (PLOT_BOTTOM - PLOT_TOP)
+
+// ==========================================
+// === motor parameters
+// ==========================================
+#define STEP_PHASE_DELAY 50 // 10kHz pulse frequency (us)
+#define DIR_SETUP_US 10 // delay after changing DIR before stepping
+#define PULSES_PER_CLICK 16 // microsteps per encoder click (tune this)
+
+// Software debouncing: edges closer together than this are ignored
+#define ENC_DEBOUNCE_US 2000 // encoder A (increase if you still see double counts)
+#define SW_DEBOUNCE_US 50000 // push button (50 ms)
+
+// ==========================================
+// === shared data
+// ==========================================
+// motor variables
+volatile int32_t count = 0; // encoder clicks (+ clockwise, - counter-clockwise)
+volatile int32_t dir = 0; // tracks current dirction motor is set to rotate
+volatile int32_t target = 0; // desired position in microsteps
+volatile bool motor_enabled = true; // toggled by the button
+static int32_t position = 0; // tracks microsteps taken since program start
+
+// Circular display buffer (raw 12-bit ADC values)
+uint16_t mic_buf[PLOT_WIDTH];
+
+#define YIN_SAMPLES 1024
+int16_t yin_buf[YIN_SAMPLES];
+volatile int yin_idx = 0;
+volatile bool yin_ready = false;
+
+// Pointer to head of buffer (oldest sample)
+volatile int head = 0;
+
+// Decimation counter ("throttle" in the PID code)
+volatile int throttle = 0;
+
+// Most recent sample
+volatile uint16_t latest_sample = 0;
+
+// Pitch
+volatile float pitch = -1;
+float expected_pitch = 500;
+
+// Periodicity
+volatile float periodicity = 0;
+
+// character array
+char screentext[40];
+
+static struct repeating_timer sample_timer;
+
+// Display gain: how many times to magnify the signal around the DC bias
+#define DISPLAY_GAIN 6
+#define ADC_MID 2048
+
+static inline int adc_to_y(uint16_t v)
+{
+  int centered = ((int)v - ADC_MID) * DISPLAY_GAIN; // zero-centered, magnified
+  int y = (PLOT_TOP + PLOT_HEIGHT / 2) - ((centered * PLOT_HEIGHT) >> 12);
+  if (y < PLOT_TOP)
+    y = PLOT_TOP; // clamp to the plot area
+  if (y > PLOT_BOTTOM)
+    y = PLOT_BOTTOM;
+  return y;
+}
+
+// ==========================================
+// === motor helper functions
+// ==========================================
+static void motor_set_enabled(bool on)
+{
+  gpio_put(ENA_PIN, (int)(!on));
+}
+
+static void motor_init(void)
+{
+  gpio_init(PUL_PIN);
+  gpio_set_dir(PUL_PIN, GPIO_OUT);
+  gpio_put(PUL_PIN, 0);
+
+  gpio_init(DIR_PIN);
+  gpio_set_dir(DIR_PIN, GPIO_OUT);
+  gpio_put(DIR_PIN, dir);
+
+  gpio_init(ENA_PIN);
+  gpio_set_dir(ENA_PIN, GPIO_OUT);
+  motor_set_enabled(true);
+}
+
+// One microstep in the given direction
+static void step_once(bool desired_dir)
+{
+  if ((int)desired_dir != dir)
+  {
+    gpio_put(DIR_PIN, desired_dir);
+    dir = desired_dir;
+    sleep_us(DIR_SETUP_US);
+  }
+  gpio_put(PUL_PIN, 1);
+  sleep_us(STEP_PHASE_DELAY);
+  gpio_put(PUL_PIN, 0);
+  sleep_us(STEP_PHASE_DELAY);
+}
+
+// ==========================================
+// === GPIO ISR (encoder A and button)
+// ==========================================
+void gpio_callback(uint gpio, uint32_t events)
+{
+  static uint32_t last_a_us = 0;
+  static uint32_t last_sw_us = 0;
+  uint32_t now = time_us_32();
+
+  if (gpio == ENCODER_A)
+  {
+    // debouncing: ignore edges that arrive too soon after the last one
+    if (now - last_a_us < ENC_DEBOUNCE_US)
+      return;
+    last_a_us = now;
+
+    if (gpio_get(ENCODER_B))
+    { // clockwise
+      count += 1;
+      target += PULSES_PER_CLICK;
+    }
+    else
+    { // counter-clockwise
+      count -= 1;
+      target -= PULSES_PER_CLICK;
+    }
+  }
+  else if (gpio == SW)
+  {
+    if (now - last_sw_us < SW_DEBOUNCE_US)
+      return;
+    last_sw_us = now;
+
+    motor_enabled = !motor_enabled;
+    motor_set_enabled(motor_enabled);
+  }
+}
+
+// ==========================================
+// === sampling ISR (runs on core 0)
+// ==========================================
+bool sample_callback(struct repeating_timer *t)
+{
+  uint16_t val = adc_read();
+  if (!yin_ready)
+  {
+    yin_buf[yin_idx++] = (int16_t)val - ADC_MID; // center around 0
+    if (yin_idx >= YIN_SAMPLES)
+    {
+      yin_ready = true; // freeze: ISR stops writing
+    }
+  }
+  latest_sample = val;
+
+  // Increment drawspeed controller
+  throttle += 1;
+  // Maintain a circular buffer for display
+  if (throttle >= THRESHOLD)
+  {
+    // Zero drawspeed controller
+    throttle = 0;
+
+    // Replace oldest data in array with new sample
+    mic_buf[head] = val;
+
+    // Move the pointer to the oldest data
+    head = ((head + 1) == PLOT_WIDTH) ? 0 : (head + 1);
+  }
+  return true; // keep repeating
+}
+
+// ==========================================
+// === draw the static aspects of the display
+// ==========================================
+void drawAxes()
+{
+  setTextSize(1);
+  setTextColor(WHITE);
+
+  // Vertical axis and ticks (0, 2048, 4095)
+  drawVLine(LEFT_EDGE - 1, PLOT_TOP, PLOT_HEIGHT, CYAN);
+  drawHLine(LEFT_EDGE - 6, PLOT_BOTTOM, 5, CYAN);
+  drawHLine(LEFT_EDGE - 6, PLOT_TOP + PLOT_HEIGHT / 2, 5, CYAN);
+  drawHLine(LEFT_EDGE - 6, PLOT_TOP, 5, CYAN);
+
+  sprintf(screentext, "0");
+  setCursor(LEFT_EDGE - 30, PLOT_BOTTOM - 4);
+  writeString(screentext);
+  sprintf(screentext, "2048");
+  setCursor(LEFT_EDGE - 50, PLOT_TOP + PLOT_HEIGHT / 2 - 4);
+  writeString(screentext);
+  sprintf(screentext, "4095");
+  setCursor(LEFT_EDGE - 50, PLOT_TOP - 4);
+  writeString(screentext);
+}
+
+// ==========================================
+// === draw thread (runs on core 1)
+// ==========================================
+static PT_THREAD(protothread_draw(struct pt *pt))
+{
+  PT_BEGIN(pt);
+
+  static int start;
+  static int i;
+  char info_str[64];
+  char title_str[64];
+  char pitch_str[64];
+  char exp_pitch_str[64];
+  char periodicity_str[64];
+  char status_str[32];
+  char count_str[48];
+
+  // Draw axes
+  drawAxes();
+  // Copy to other buffer
+  copy_buffer_to_other();
+
+  while (1)
+  {
+    // Wait for a buffer swap
+    PT_YIELD_UNTIL(pt, draw_start_signal());
+
+    // Clear the buffer, draw the axes
+    clearLowFrame(0, BLACK);
+    drawAxes();
+
+    // Draw text
+    sprintf(title_str, "Mic signal: %d Hz, %d ms window",
+            SAMPLE_RATE_HZ / THRESHOLD,
+            (int)((1000L * PLOT_WIDTH * THRESHOLD) / SAMPLE_RATE_HZ));
+    sprintf(info_str, "Latest ADC: %d", (int)latest_sample);
+    sprintf(exp_pitch_str, "Expected Pitch: %f", expected_pitch);
+    sprintf(pitch_str, "Actual Pitch: %f", pitch);
+    sprintf(periodicity_str, "Periodicity: %f", periodicity);
+    sprintf(status_str, motor_enabled ? "Motor: ENABLED" : "Motor: DISABLED");
+    sprintf(count_str, "Encoder Step Count: %ld", (long)count);
+
+    // printf("%u\n", latest_sample);
+    drawTextAscii(10, 10, title_str, WHITE, BLACK);
+    drawTextAscii(10, 22, info_str, WHITE, BLACK);
+    drawTextAscii(10, 34, exp_pitch_str, WHITE, BLACK);
+    drawTextAscii(10, 46, pitch_str, WHITE, BLACK);
+    drawTextAscii(10, 58, periodicity_str, WHITE, BLACK);
+    drawTextAscii(10, 70, status_str, motor_enabled ? GREEN : RED, BLACK);
+    drawTextAscii(10, 82, count_str, WHITE, BLACK);
+    
+    // Plot data oldest-->newest
+    start = head;
+    int y_prev = adc_to_y(mic_buf[start]);
+    for (i = 0; i < PLOT_WIDTH; i++)
+    {
+      // drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
+      // y_prev = adc_to_y(mic_buf[start]);
+      int y = adc_to_y(mic_buf[start]);
+      if (i > 0)
+        drawLine(LEFT_EDGE + i - 1, y_prev, LEFT_EDGE + i, y, GREEN);
+      y_prev = y;
+      // drawPixel(LEFT_EDGE + i, adc_to_y(mic_buf[start]), GREEN);
+      start = ((start + 1) == PLOT_WIDTH) ? 0 : (start + 1); // next value in the data array
+    }
+  }
+
+  PT_END(pt);
+}
+
+// ==========================================
+// === core 0 thread: YIN algorithm frequency detection
+// ==========================================
+static PT_THREAD(protothread_core_0(struct pt *pt))
+{
+  PT_BEGIN(pt);
+  static Yin yin;
+  static bool yin_initialized = false;
+  if (!yin_initialized)
+  {
+    // yin = yin_init(YIN_SAMPLES, YIN_SAMPLES / 2, YIN_THRESHOLD, YIN_TAU_MAX);
+    yin = yin_init(YIN_SAMPLES, 737, YIN_THRESHOLD, YIN_TAU_MAX);
+    yin_initialized = true;
+  }
+
+  while (1)
+  {
+    // toggle gpio 25
+    // gpio_put(LED_PIN, !gpio_get(LED_PIN));
+    PT_YIELD_UNTIL(pt, yin_ready);
+
+    YinOut out = yin_algorithm(&yin, yin_buf);
+
+    pitch = out.pitch;
+    periodicity = out.periodicity;
+    yin_idx = 0;
+    yin_ready = false; // re-arm: ISR starts filling again
+    // printf("\nd': %f", yin.min_diff);
+    // printf("\ntau: %f", yin.min_tau);
+    printf("d': %.4f  tau: %d  pitch: %.2f\n", yin.min_diff, yin.min_tau, pitch);
+
+    // figure out error in cents
+    float err_cents = 1200.0 * log2(pitch / expected_pitch);
+
+    // WIP need to translate cent error into correct motor correction
+    // pegs turn diff directions to tighten or loosen depending on which side of the headstock
+    // need to characterize rough steps/cent for each string
+    // if tuning down, may need to overshoot because tension settles well when string is tightening
+  }
+
+  PT_END(pt);
+}
+
+// ==========================================
+// === motor thread (runs on core 0)
+// ==========================================
+static PT_THREAD(protothread_motor(struct pt *pt))
+{
+  PT_BEGIN(pt);
+
+  while (1)
+  {
+    // Wait until the motor is behind the target
+    PT_YIELD_UNTIL(pt, position != target);
+
+    if (!motor_enabled)
+    {
+      // Driver is released, so drop any pending steps
+      position = target;
+    }
+    else
+    {
+      bool desired_dir = target > position;
+      step_once(desired_dir);
+      position += desired_dir ? 1 : -1;
+    }
+  }
+
+  PT_END(pt);
+}
+
+// Entry point for core 1
+void core1_entry()
+{
+  pt_add_thread(protothread_draw);
+  pt_schedule_start;
+}
+
+int main()
+{
+  // Overclock
+  set_sys_clock_khz(150000, true);
+
+  // Initialize stdio
+  stdio_init_all();
+
+  // Initialize the VGA screen
+  initVGA();
+
+  // Setup the ADC
+  adc_init();
+  adc_gpio_init(ADC_PIN);
+  adc_select_input(ADC_MUX);
+  
+  // Setup the motor pins
+  motor_init();
+
+  // Encoder pins (A is the interrupt, B is just read inside the ISR)
+  gpio_init(ENCODER_A);
+  gpio_set_dir(ENCODER_A, GPIO_IN);
+  gpio_pull_up(ENCODER_A);
+
+  gpio_init(ENCODER_B);
+  gpio_set_dir(ENCODER_B, GPIO_IN);
+  gpio_pull_up(ENCODER_B);
+
+  // Button
+  gpio_init(SW);
+  gpio_set_dir(SW, GPIO_IN);
+  gpio_pull_up(SW);
+
+  // One shared callback for both interrupts
+  gpio_set_irq_enabled_with_callback(ENCODER_A, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+  gpio_set_irq_enabled(SW, GPIO_IRQ_EDGE_FALL, true);
+
+  // Map LED to GPIO port, make it low
+  gpio_init(LED_PIN);
+  gpio_set_dir(LED_PIN, GPIO_OUT);
+  gpio_put(LED_PIN, 0);
+
+  // Start the display buffer at mid-scale (flat line)
+  for (int k = 0; k < PLOT_WIDTH; k++)
+  {
+    mic_buf[k] = 2048;
+  }
+
+  // Start the sampling ISR on core 0
+  add_repeating_timer_us(-SAMPLE_PERIOD_US, sample_callback, NULL, &sample_timer);
+
+  // start core 1
+  multicore_reset_core1();
+  multicore_launch_core1(core1_entry);
+
+  // Add core 0 threads
+  pt_add_thread(protothread_core_0);
+  pt_add_thread(protothread_motor);
+
+  // Start scheduling core 0 threads
+  pt_schedule_start;
+}
